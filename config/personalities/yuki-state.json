@@ -1,0 +1,9 @@
+{
+  "name": "YUKI",
+  "preferences": {
+    "season": "winter",
+    "time_of_day": "night",
+    "animal": "cat",
+    "environment": "quiet"
+  }
+}

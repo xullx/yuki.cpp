@@ -160,7 +160,7 @@ def main():
                 messages=[
                     {
                         "role": "system",
-                        "content": personality.build_system(tone["state"]),
+                        "content": personality.build_system(tone["state"], transcript),
                     },
                     {
                         "role": "user",

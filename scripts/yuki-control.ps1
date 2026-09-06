@@ -178,6 +178,7 @@ Write-Host ""
 Write-Host "YUKI.CPP CONTROL"
 Write-Host "=================="
 Write-Host "bridge         = start YUKI voice assistant"
+Write-Host "text           = start YUKI text chat"
 Write-Host "echo-off       = no spoken confirmation"
 Write-Host "echo-brief     = brief confirmation"
 Write-Host "echo-full      = repeat ASR transcript"
@@ -219,6 +220,10 @@ while ($true) {
 
         "bridge" {
             py "C:\Yuki\app\yuki_bridge.py"
+        }
+
+        "text" {
+            py "C:\Yuki\app\yuki_text.py"
         }
 
         "tts-test" {
