@@ -3,34 +3,67 @@ import json
 import re
 
 
-DEFAULT_PROFILE_PATH = (
+PERSONALITY_DIR = (
     Path(__file__).resolve().parent.parent
     / "config"
     / "personalities"
-    / "yuki-ja.txt"
 )
 
+DEFAULT_CORE_PATH = (
+    PERSONALITY_DIR / "yuki-core-ja.txt"
+)
+
+DEFAULT_STYLE_PATH = (
+    PERSONALITY_DIR / "yuki-style-ja.txt"
+)
+
+DEFAULT_BOUNDARIES_PATH = (
+    PERSONALITY_DIR / "yuki-boundaries-ja.txt"
+)
+
+DEFAULT_EXAMPLES_PATH = (
+    PERSONALITY_DIR / "yuki-examples-ja.txt"
+)
 
 DEFAULT_STATE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "config"
-    / "personalities"
-    / "yuki-state.json"
+    PERSONALITY_DIR / "yuki-preferences.json"
 )
 
-
-def load_profile(path=DEFAULT_PROFILE_PATH):
+def _load_text(path):
     try:
-        return path.read_text(encoding="utf-8-sig").strip()
+        return path.read_text(
+            encoding="utf-8-sig"
+        ).strip()
     except Exception:
         return ""
 
 
+def load_profile(path=None):
+    if path is not None:
+        return _load_text(path)
+
+    parts = (
+        _load_text(DEFAULT_CORE_PATH),
+        _load_text(DEFAULT_STYLE_PATH),
+        _load_text(DEFAULT_BOUNDARIES_PATH),
+        _load_text(DEFAULT_EXAMPLES_PATH),
+    )
+
+    return "\n\n".join(
+        part for part in parts if part
+    ).strip()
+
+
 def load_state(path=DEFAULT_STATE_PATH):
     try:
-        with path.open("r", encoding="utf-8-sig") as f:
+        with path.open(
+            "r",
+            encoding="utf-8-sig",
+        ) as f:
             data = json.load(f)
+
         return data if isinstance(data, dict) else {}
+
     except Exception:
         return {}
 
