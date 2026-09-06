@@ -64,6 +64,7 @@ def main():
             "contradicts_preference",
             "missing_preferred_stance",
             "false_agreement",
+            "fake_physical_experience",
         }
 
         hard_failures = [
@@ -73,7 +74,13 @@ def main():
         ]
 
         if hard_failures:
-            fallback = personality.build_hard_fallback(user_text)
+            fallback = personality.build_boundary_fallback(
+                user_text,
+                hard_failures,
+            )
+
+            if not fallback:
+                fallback = personality.build_hard_fallback(user_text)
 
             if fallback:
                 print(
@@ -87,6 +94,12 @@ def main():
                     user_text,
                     reply,
                 )
+
+        reply = personality.normalize_spoken_japanese(reply)
+        validation = personality.validate_reply(
+            user_text,
+            reply,
+        )
 
         elapsed = time.perf_counter() - t0
 

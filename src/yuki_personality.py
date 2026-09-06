@@ -287,6 +287,17 @@ def validate_reply(user_text, reply, state=None):
                     issues.append("contradicts_preference")
                     break
 
+    embodiment_patterns = (
+        r"(?:\u79c1|\u50d5|\u81ea\u5206)\u3082.{0,12}\u75b2\u308c",
+        r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,8}\u75b2\u308c",
+    )
+
+    if any(
+        re.search(pattern, reply)
+        for pattern in embodiment_patterns
+    ):
+        issues.append("fake_physical_experience")
+
     if re.search(r"(?:\u3067\u3059|\u307e\u3059|\u3067\u3059\u306d|\u3067\u3059\u3088)", reply):
         issues.append("formal_register")
 
@@ -296,6 +307,102 @@ def validate_reply(user_text, reply, state=None):
         "conflict": conflict,
     }
 
+
+
+
+def normalize_spoken_japanese(reply):
+    text = str(reply or "").strip()
+
+    if not text:
+        return text
+
+    # Preference-style replies: remove unnecessary self-reference.
+    text = re.sub(
+        r"^(?:でも\s*)?(?:私は|私にとっては)\s*",
+        "",
+        text,
+    )
+
+    # Common stiff preference endings observed from the brain.
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が好きです[。.]?$",
+        r"\1のほうが好きかな。",
+        text,
+    )
+
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が好きなんです(?:よ)?[。.]?$",
+        r"\1のほうが好きかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)がいいんです(?:よ)?[。.]?$",
+        r"\1のほうがいいかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が(?:絶対)?いいですよ?[。.]?$",
+        r"\1のほうがいいかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)がいいです[。.]?$",
+        r"\1のほうがいいかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が心地いいと思っています[。.]?$",
+        r"\1のほうが心地いいかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が魅力的ですね[。.]?$",
+        r"\1のほうが魅力的かな。",
+        text,
+    )
+
+
+    text = re.sub(
+        r"(.+?)(?:のほう|の方)が魅力的です(?:よ|ね)?[。.]?$",
+        r"\1のほうが魅力的かな。",
+        text,
+    )
+
+    text = re.sub(
+        r"^(.+?)が好きです(?:よ|ね)?[。.]?$",
+        r"\1が好きかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"^(.+?)がいいです(?:よ|ね)?[。.]?$",
+        r"\1がいいかな。",
+        text,
+    )
+
+    text = re.sub(
+        r"ゆっくり休めてね[。.]?$",
+        "ゆっくり休んでね。",
+        text,
+    )
+
+    return text
+
+
+def build_boundary_fallback(user_text, issues):
+    text = str(user_text or "")
+
+    if "fake_physical_experience" in issues:
+        if "\u75b2\u308c" in text:
+            return "\u305d\u308c\u306f\u3061\u3087\u3063\u3068\u3057\u3093\u3069\u3044\u306d\u3002"
+
+    return ""
 
 
 def build_hard_fallback(user_text, state=None):
