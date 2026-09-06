@@ -10,51 +10,27 @@ PERSONALITY_DIR = (
 )
 
 DEFAULT_CORE_PATH = (
-    PERSONALITY_DIR / "yuki-core-ja.txt"
+    PERSONALITY_DIR / "yuki-core-ja.json"
 )
 
 DEFAULT_STYLE_PATH = (
-    PERSONALITY_DIR / "yuki-style-ja.txt"
+    PERSONALITY_DIR / "yuki-style-ja.json"
 )
 
 DEFAULT_BOUNDARIES_PATH = (
-    PERSONALITY_DIR / "yuki-boundaries-ja.txt"
+    PERSONALITY_DIR / "yuki-boundaries-ja.json"
 )
 
 DEFAULT_EXAMPLES_PATH = (
-    PERSONALITY_DIR / "yuki-examples-ja.txt"
+    PERSONALITY_DIR / "yuki-examples-ja.json"
 )
 
 DEFAULT_STATE_PATH = (
     PERSONALITY_DIR / "yuki-preferences.json"
 )
 
-def _load_text(path):
-    try:
-        return path.read_text(
-            encoding="utf-8-sig"
-        ).strip()
-    except Exception:
-        return ""
 
-
-def load_profile(path=None):
-    if path is not None:
-        return _load_text(path)
-
-    parts = (
-        _load_text(DEFAULT_CORE_PATH),
-        _load_text(DEFAULT_STYLE_PATH),
-        _load_text(DEFAULT_BOUNDARIES_PATH),
-        _load_text(DEFAULT_EXAMPLES_PATH),
-    )
-
-    return "\n\n".join(
-        part for part in parts if part
-    ).strip()
-
-
-def load_state(path=DEFAULT_STATE_PATH):
+def _load_json(path):
     try:
         with path.open(
             "r",
@@ -66,6 +42,103 @@ def load_state(path=DEFAULT_STATE_PATH):
 
     except Exception:
         return {}
+
+
+PROFILE_SECTIONS = (
+    ("identity", "Identity"),
+    ("core_personality", "Core personality"),
+    ("personality_traits", "Personality traits"),
+    ("spoken_japanese_register", "Spoken Japanese register"),
+    ("conversation_style", "Conversation style"),
+    ("language", "Language"),
+    ("self_model_boundaries", "Self-model boundaries"),
+)
+
+
+def _compile_profile_data(data):
+    parts = []
+
+    for key, title in PROFILE_SECTIONS:
+        values = data.get(key)
+
+        if not isinstance(values, list):
+            continue
+
+        lines = [
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        ]
+
+        if not lines:
+            continue
+
+        parts.append(
+            "# " + title + "\n" + "\n".join(lines)
+        )
+
+    examples = data.get("examples")
+
+    if isinstance(examples, list):
+        lines = []
+
+        for example in examples:
+            if not isinstance(example, dict):
+                continue
+
+            user = str(example.get("user", "")).strip()
+            yuki = str(example.get("yuki", "")).strip()
+
+            if user:
+                lines.append(
+                    "\u30e6\u30fc\u30b6\u30fc: " + user
+                )
+
+            if yuki:
+                lines.append(
+                    "YUKI: " + yuki
+                )
+
+            if user or yuki:
+                lines.append("")
+
+        if lines:
+            parts.append(
+                "# Conversational examples\n"
+                + "\n".join(lines).strip()
+            )
+
+    return "\n\n".join(parts).strip()
+
+
+def load_profile(path=None):
+    paths = (
+        DEFAULT_CORE_PATH,
+        DEFAULT_STYLE_PATH,
+        DEFAULT_BOUNDARIES_PATH,
+        DEFAULT_EXAMPLES_PATH,
+    )
+
+    if path is not None:
+        return _compile_profile_data(
+            _load_json(path)
+        )
+
+    parts = []
+
+    for module_path in paths:
+        compiled = _compile_profile_data(
+            _load_json(module_path)
+        )
+
+        if compiled:
+            parts.append(compiled)
+
+    return "\n\n".join(parts).strip()
+
+
+def load_state(path=DEFAULT_STATE_PATH):
+    return _load_json(path)
 
 
 PREFERENCE_RULES = (
