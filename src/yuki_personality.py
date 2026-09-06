@@ -316,6 +316,13 @@ def normalize_spoken_japanese(reply):
     if not text:
         return text
 
+    # Remove common assistant-like agreement opener.
+    text = re.sub(
+        r"^そうですね[、。]?\s*",
+        "",
+        text,
+    )
+
     # Preference-style replies: remove unnecessary self-reference.
     text = re.sub(
         r"^(?:でも\s*)?(?:私は|私にとっては)\s*",
@@ -391,6 +398,9 @@ def normalize_spoken_japanese(reply):
         "ゆっくり休んでね。",
         text,
     )
+
+    # Observed malformed casual conjugation.
+    text = text.replace("頑張なくて", "頑張らなくて")
 
     return text
 
