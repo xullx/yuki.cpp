@@ -192,6 +192,163 @@ def build_relevant_state(user_text, state=None):
     )
 
 
+
+def get_conflicting_preference(user_text, state=None):
+    text = str(user_text or "")
+    state = load_state() if state is None else state
+    prefs = state.get("preferences", {})
+
+    for rule in PREFERENCE_RULES:
+        options = rule["options"]
+
+        if not _topic_is_present(text, options):
+            continue
+
+        preferred = prefs.get(rule["key"])
+
+        if preferred not in options:
+            continue
+
+        choice = _comparison_choice(text, options)
+
+        if choice is not None and choice != preferred:
+            names = list(options)
+
+            other = next(
+                (name for name in names if name != preferred),
+                None,
+            )
+
+            return {
+                "key": rule["key"],
+                "preferred": preferred,
+                "other": other,
+                "preferred_terms": options[preferred],
+                "other_terms": options.get(other, ()),
+                "statement": rule["statements"].get(preferred, ""),
+            }
+
+    return None
+
+
+def validate_reply(user_text, reply, state=None):
+    conflict = get_conflicting_preference(user_text, state)
+
+    issues = []
+
+    if conflict:
+        preferred_terms = conflict["preferred_terms"]
+        other_terms = conflict["other_terms"]
+
+        preferred_present = any(
+            term in reply for term in preferred_terms
+        )
+
+        false_agreement_markers = (
+            "私も",
+            "僕も",
+            "同じだ",
+            "同じです",
+            "その通り",
+        )
+
+        if any(
+            marker in reply
+            for marker in false_agreement_markers
+        ):
+            issues.append("false_agreement")
+
+        if not preferred_present:
+            issues.append("missing_preferred_stance")
+
+        for term in other_terms:
+            wrong_stance_patterns = (
+                rf"{re.escape(term)}.{{0,8}}(?:派|好き|好み|最高|いい|良い|心地いい)",
+                rf"{re.escape(term)}.*?(?:ほう|方).*?(?:好き|いい|良い|好み)",
+            )
+
+            if any(
+                re.search(pattern, reply)
+                for pattern in wrong_stance_patterns
+            ):
+                issues.append("contradicts_preference")
+
+        for preferred_term in preferred_terms:
+            for other_term in other_terms:
+                patterns = (
+                    rf"{re.escape(preferred_term)}.*?\u3088\u308a.*?"
+                    rf"{re.escape(other_term)}.*?(?:\u307b\u3046|\u65b9).*?"
+                    rf"(?:\u597d\u304d|\u3044\u3044|\u826f\u3044|\u597d\u307f)",
+                    rf"{re.escape(other_term)}.*?(?:\u307b\u3046|\u65b9).*?"
+                    rf"(?:\u597d\u304d|\u3044\u3044|\u826f\u3044|\u597d\u307f)",
+                )
+
+                if any(re.search(pattern, reply) for pattern in patterns):
+                    issues.append("contradicts_preference")
+                    break
+
+    if re.search(r"(?:\u3067\u3059|\u307e\u3059|\u3067\u3059\u306d|\u3067\u3059\u3088)", reply):
+        issues.append("formal_register")
+
+    return {
+        "ok": not issues,
+        "issues": sorted(set(issues)),
+        "conflict": conflict,
+    }
+
+
+
+def build_hard_fallback(user_text, state=None):
+    conflict = get_conflicting_preference(user_text, state)
+
+    if not conflict:
+        return ""
+
+    key = conflict["key"]
+    preferred = conflict["preferred"]
+
+    replies = {
+        ("season", "winter"): "\u3044\u3084\u3001\u51ac\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("season", "summer"): "\u3044\u3084\u3001\u590f\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("time_of_day", "night"): "\u3044\u3084\u3001\u591c\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("time_of_day", "morning"): "\u3044\u3084\u3001\u671d\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("animal", "cat"): "\u3046\u30fc\u3093\u3001\u732b\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("animal", "dog"): "\u3046\u30fc\u3093\u3001\u72ac\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("environment", "quiet"): "\u3044\u3084\u3001\u9759\u304b\u306a\u5834\u6240\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+        ("environment", "lively"): "\u3044\u3084\u3001\u306b\u304e\u3084\u304b\u306a\u5834\u6240\u306e\u307b\u3046\u304c\u597d\u304d\u304b\u306a\u3002",
+    }
+
+    return replies.get((key, preferred), "")
+
+def build_retry_instruction(user_text, reply, validation):
+    parts = [
+        "\u524d\u306e\u8fd4\u7b54\u3092\u4fee\u6b63\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+        "\u5185\u5bb9\u306f\u77ed\u304f\u3001\u81ea\u7136\u306a\u65e5\u672c\u8a9e\u306e"
+        "\u30bf\u30e1\u53e3\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+        "\u3067\u3059\u30fb\u307e\u3059\u8abf\u306f\u4f7f\u308f\u306a\u3044\u3067\u304f\u3060\u3055\u3044\u3002",
+    ]
+
+    conflict = validation.get("conflict")
+
+    if conflict:
+        statement = conflict.get("statement")
+
+        if statement:
+            parts.append(statement)
+
+        parts.append(
+            "\u3053\u306e\u597d\u307f\u3068\u77db\u76fe\u305b\u305a\u3001"
+            "YUKI\u81ea\u8eab\u306e\u7acb\u5834\u3092\u660e\u793a\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
+        )
+
+    parts.append(
+        "\u524d\u306e\u8fd4\u7b54: " + str(reply)
+    )
+
+    return "\n".join(parts)
+
+
+
 def build_system(tone_state, user_text="", base_personality=None):
     base = (
         base_personality
