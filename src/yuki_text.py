@@ -58,7 +58,16 @@ def main():
 
         choice = response.choices[0]
         reply = (choice.message.content or "").strip()
-        validation = personality.validate_reply(user_text, reply)
+
+        reply = personality.clean_reply_structure(
+            user_text,
+            reply,
+        )
+
+        validation = personality.validate_reply(
+            user_text,
+            reply,
+        )
 
         hard_issues = {
             "contradicts_preference",

@@ -123,11 +123,13 @@ def _comparison_choice(text, options):
 
 
 def _topic_is_present(text, options):
-    return any(
-        term in text
+    matched_options = sum(
+        1
         for terms in options.values()
-        for term in terms
+        if any(term in text for term in terms)
     )
+
+    return matched_options >= 2
 
 
 def build_relevant_state(user_text, state=None):
@@ -288,8 +290,17 @@ def validate_reply(user_text, reply, state=None):
                     break
 
     embodiment_patterns = (
+        # Physical fatigue claimed as YUKI's own state.
         r"(?:\u79c1|\u50d5|\u81ea\u5206)\u3082.{0,12}\u75b2\u308c",
         r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,8}\u75b2\u308c",
+
+        # Mirrored lived experience: "私も今日..." / "私も最近..."
+        r"(?:\u79c1|\u50d5)\u3082.{0,6}(?:\u4eca\u65e5|\u6700\u8fd1).{0,24}",
+
+        # Invented sleep / wake habits or routines.
+        r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,12}(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057)",
+        r"\u6700\u8fd1[、,\s]*(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057).{0,20}",
+        r"\u305f\u307e\u306b\u306f.{0,6}\u65e9\u8d77\u304d",
     )
 
     if any(
@@ -308,6 +319,46 @@ def validate_reply(user_text, reply, state=None):
     }
 
 
+
+
+
+def clean_reply_structure(user_text, reply):
+    user = str(user_text or "").strip()
+    text = str(reply or "").strip()
+
+    if not text:
+        return text
+
+    # Stop at markdown / separator spill.
+    text = re.split(r"(?:^|\n)\s*---+\s*(?:\n|$)", text, maxsplit=1)[0]
+
+    # Remove blank lines and exact transcript echoes.
+    lines = []
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        if not line:
+            continue
+
+        if user and line.rstrip("。！？!?") == user.rstrip("。！？!?"):
+            continue
+
+        lines.append(line)
+
+    text = " ".join(lines).strip()
+
+    if not text:
+        return text
+
+    # Keep at most two spoken sentences.
+    parts = re.split(r"(?<=[。！？!?])\s*", text)
+    sentences = [part.strip() for part in parts if part.strip()]
+
+    if len(sentences) > 2:
+        text = " ".join(sentences[:2]).strip()
+
+    return text
 
 
 def normalize_spoken_japanese(reply):
@@ -408,9 +459,37 @@ def normalize_spoken_japanese(reply):
 def build_boundary_fallback(user_text, issues):
     text = str(user_text or "")
 
-    if "fake_physical_experience" in issues:
-        if "\u75b2\u308c" in text:
-            return "\u305d\u308c\u306f\u3061\u3087\u3063\u3068\u3057\u3093\u3069\u3044\u306d\u3002"
+    if "fake_physical_experience" not in issues:
+        return ""
+
+    if "\u75b2\u308c" in text:
+        return (
+            "\u305d\u308c\u306f\u3061\u3087\u3063\u3068"
+            "\u3057\u3093\u3069\u3044\u306d\u3002"
+        )
+
+    if "\u6687" in text:
+        return (
+            "\u3058\u3083\u3042\u3001\u4f55\u304b\u8efd\u304f"
+            "\u6c17\u5206\u8ee2\u63db\u3067\u304d\u308b\u3053\u3068\u304c"
+            "\u3042\u308b\u3068\u3044\u3044\u304b\u3082\u3002"
+        )
+
+    if any(
+        word in text
+        for word in (
+            "\u591c\u66f4\u304b\u3057",
+            "\u5bdd\u308b",
+            "\u5bdd\u4e0d\u8db3",
+            "\u7761\u7720",
+        )
+    ):
+        return (
+            "\u591c\u66f4\u304b\u3057\u304c\u7d9a\u304f\u3068"
+            "\u3057\u3093\u3069\u304f\u306a\u308a\u305d\u3046\u3060\u306d\u3002"
+            "\u5c11\u3057\u65e9\u3081\u306b\u5bdd\u3089\u308c\u308b\u3068"
+            "\u3088\u3055\u305d\u3046\u3002"
+        )
 
     return ""
 
