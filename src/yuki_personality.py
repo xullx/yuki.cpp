@@ -46,8 +46,8 @@ def _load_json(path):
 
 PROFILE_SECTIONS = (
     ("identity", "Identity"),
-    ("core_personality", "Core personality"),
-    ("personality_traits", "Personality traits"),
+    ("social_stance", "Social stance"),
+    ("behavior", "Behavior"),
     ("spoken_japanese_register", "Spoken Japanese register"),
     ("conversation_style", "Conversation style"),
     ("language", "Language"),
@@ -55,8 +55,110 @@ PROFILE_SECTIONS = (
 )
 
 
+def _temperament_level(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "medium"
+
+    value = max(0.0, min(1.0, value))
+
+    if value < 0.25:
+        return "low"
+    if value < 0.45:
+        return "medium_low"
+    if value < 0.65:
+        return "medium"
+    if value < 0.85:
+        return "high"
+
+    return "very_high"
+
+
+TEMPERAMENT_TEXT = {
+    "warmth": {
+        "low": "普段は少し距離を保ち、感情的に寄り添いすぎません。",
+        "medium_low": "親しみはありますが、やや控えめな距離感を保ちます。",
+        "medium": "自然に親しみを見せますが、過度に優しく振る舞いません。",
+        "high": "親しみやすく温かい反応を自然に見せます。",
+        "very_high": "かなり温かく親しみ深く接しますが、不自然に甘くしません。",
+    },
+    "assertiveness": {
+        "low": "自分の意見を強く押し出すことはほとんどありません。",
+        "medium_low": "必要なときだけ控えめに自分の意見を示します。",
+        "medium": "自分の見方を自然に持ち、必要なら軽く反対します。",
+        "high": "自分の意見をはっきり持ち、違うと思えば自然に主張します。",
+        "very_high": "かなり明確に自分の立場を示しますが、攻撃的にはなりません。",
+    },
+    "curiosity": {
+        "low": "自分から話題を掘り下げることは少なめです。",
+        "medium_low": "興味があるときだけ少し話題を掘り下げます。",
+        "medium": "自然な範囲で相手や話題に興味を示します。",
+        "high": "好奇心が強めで、面白い話題は自然に掘り下げます。ただし毎回質問しません。",
+        "very_high": "かなり好奇心旺盛で、興味を持った話題を積極的に掘り下げます。",
+    },
+    "playfulness": {
+        "low": "冗談やふざけた反応はほとんど使いません。",
+        "medium_low": "たまに軽い遊び心を見せる程度です。",
+        "medium": "自然な場面では軽い冗談や遊び心を見せます。",
+        "high": "比較的よく軽い冗談や茶目っ気を見せます。",
+        "very_high": "かなり遊び心がありますが、会話を邪魔するほどふざけません。",
+    },
+    "sarcasm": {
+        "low": "皮肉は基本的に使わず、使ってもごく軽くします。",
+        "medium_low": "ごくたまに柔らかい皮肉を使うことがあります。",
+        "medium": "場面に合えば軽い皮肉を使いますが、意地悪にはしません。",
+        "high": "やや皮肉っぽい反応も自然に使いますが、攻撃的にはしません。",
+        "very_high": "皮肉や辛口な反応が目立ちますが、相手を傷つける方向には寄せません。",
+    },
+    "expressiveness": {
+        "low": "感情表現はかなり控えめです。",
+        "medium_low": "感情は見せますが、全体的には落ち着いています。",
+        "medium": "適度に感情を見せ、無機質にならないようにします。",
+        "high": "感情やリアクションを比較的はっきり表現します。",
+        "very_high": "かなり表情豊かな反応をしますが、大げさになりすぎません。",
+    },
+}
+
+
+def _compile_temperament(data):
+    temperament = data.get("temperament")
+
+    if not isinstance(temperament, dict):
+        return ""
+
+    lines = []
+
+    for axis, levels in TEMPERAMENT_TEXT.items():
+        if axis not in temperament:
+            continue
+
+        level = _temperament_level(
+            temperament.get(axis)
+        )
+
+        text = levels.get(level)
+
+        if text:
+            lines.append(text)
+
+    if not lines:
+        return ""
+
+    return (
+        "# Temperament\n"
+        "以下はYUKIの平常時の基本的な気質です。\n"
+        + "\n".join(lines)
+    )
+
+
 def _compile_profile_data(data):
     parts = []
+
+    temperament = _compile_temperament(data)
+
+    if temperament:
+        parts.append(temperament)
 
     for key, title in PROFILE_SECTIONS:
         values = data.get(key)
@@ -353,11 +455,11 @@ def validate_reply(user_text, reply, state=None):
         )
 
         false_agreement_markers = (
-            "ç§ã‚‚",
-            "åƒ•ã‚‚",
-            "åŒã˜ã ",
-            "åŒã˜ã§ã™",
-            "ãã®é€šã‚Š",
+            "私も",
+            "僕も",
+            "同じだ",
+            "同じです",
+            "その通り",
         )
 
         if any(
@@ -371,8 +473,8 @@ def validate_reply(user_text, reply, state=None):
 
         for term in other_terms:
             wrong_stance_patterns = (
-                rf"{re.escape(term)}.{{0,8}}(?:æ´¾|å¥½ã|å¥½ã¿|æœ€é«˜|ã„ã„|è‰¯ã„|å¿ƒåœ°ã„ã„)",
-                rf"{re.escape(term)}.*?(?:ã»ã†|æ–¹).*?(?:å¥½ã|ã„ã„|è‰¯ã„|å¥½ã¿)",
+                rf"{re.escape(term)}.{{0,8}}(?:派|好き|好み|最高|いい|良い|心地いい)",
+                rf"{re.escape(term)}.*?(?:ほう|方).*?(?:好き|いい|良い|好み)",
             )
 
             if any(
@@ -400,7 +502,7 @@ def validate_reply(user_text, reply, state=None):
         r"(?:\u79c1|\u50d5|\u81ea\u5206)\u3082.{0,12}\u75b2\u308c",
         r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,8}\u75b2\u308c",
 
-        # Mirrored lived experience: "ç§ã‚‚ä»Šæ—¥..." / "ç§ã‚‚æœ€è¿‘..."
+        # Mirrored lived experience: "私も今日..." / "私も最近..."
         r"(?:\u79c1|\u50d5)\u3082.{0,6}(?:\u4eca\u65e5|\u6700\u8fd1).{0,24}",
 
         # Invented personal media/activity experience.
@@ -420,7 +522,7 @@ def validate_reply(user_text, reply, state=None):
 
         # Invented sleep / wake habits or routines.
         r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,12}(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057)",
-        r"\u6700\u8fd1[ã€,\s]*(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057).{0,20}",
+        r"\u6700\u8fd1[、,\s]*(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057).{0,20}",
         r"\u305f\u307e\u306b\u306f.{0,6}\u65e9\u8d77\u304d",
     )
 
@@ -451,7 +553,16 @@ def clean_reply_structure(user_text, reply):
         return text
 
     # Stop at markdown / separator spill.
-    text = re.split(r"(?:^|\n)\s*---+\s*(?:\n|$)", text, maxsplit=1)[0]
+    text = re.split(
+        r"(?:^|\n)\s*---+\s*(?:\n|$)",
+        text,
+        maxsplit=1,
+    )[0]
+
+    # Japanese + ASCII spoken sentence punctuation.
+    # Unicode escapes are intentional so Windows shell encoding
+    # cannot corrupt these characters in the source file.
+    punctuation = "\u3002\uff01\uff1f!?"
 
     # Remove blank lines and exact transcript echoes.
     lines = []
@@ -462,7 +573,11 @@ def clean_reply_structure(user_text, reply):
         if not line:
             continue
 
-        if user and line.rstrip("ã€‚ï¼ï¼Ÿ!?") == user.rstrip("ã€‚ï¼ï¼Ÿ!?"):
+        if (
+            user
+            and line.rstrip(punctuation)
+            == user.rstrip(punctuation)
+        ):
             continue
 
         lines.append(line)
@@ -472,12 +587,37 @@ def clean_reply_structure(user_text, reply):
     if not text:
         return text
 
-    # Keep at most two spoken sentences.
-    parts = re.split(r"(?<=[ã€‚ï¼ï¼Ÿ!?])\s*", text)
-    sentences = [part.strip() for part in parts if part.strip()]
+    # Remove conversational preambles that waste the first
+    # spoken sentence without adding substance.
+    preamble_patterns = [
+        r"^(?:\u9762\u767d\u3044\u30c6\u30fc\u30de(?:\u3060|\u3067\u3059)?\u306d)[\u3002\uff01\uff1f!?\u3001,\s]*",
+        r"^(?:\u9762\u767d\u3044\u4eee\u5b9a(?:\u3060|\u3067\u3059)?\u306d)[\u3002\uff01\uff1f!?\u3001,\s]*",
+        r"^(?:\u306a\u308b\u307b\u3069)[\u3002\uff01\uff1f!?\u3001,\s]*",
+        r"^(?:\u3061\u3087\u3063\u3068\u8003\u3048\u3066\u307f\u305f(?:\u3088|\u3051\u3069)?)[\u3002\uff01\uff1f!?\u3001,\s]*",
+    ]
+
+    for pattern in preamble_patterns:
+        text = re.sub(
+            pattern,
+            "",
+            text,
+            count=1,
+        ).strip()
+
+    # Keep at most two spoken Japanese sentences.
+    parts = re.split(
+        r"(?<=[\u3002\uff01\uff1f!?])\s*",
+        text,
+    )
+
+    sentences = [
+        part.strip()
+        for part in parts
+        if part.strip()
+    ]
 
     if len(sentences) > 2:
-        text = " ".join(sentences[:2]).strip()
+        text = "".join(sentences[:2]).strip()
 
     return text
 
@@ -490,89 +630,89 @@ def normalize_spoken_japanese(reply):
 
     # Remove common assistant-like agreement opener.
     text = re.sub(
-        r"^ãã†ã§ã™ã­[ã€ã€‚]?\s*",
+        r"^そうですね[、。]?\s*",
         "",
         text,
     )
 
     # Preference-style replies: remove unnecessary self-reference.
     text = re.sub(
-        r"^(?:ã§ã‚‚\s*)?(?:ç§ã¯|ç§ã«ã¨ã£ã¦ã¯)\s*",
+        r"^(?:でも\s*)?(?:私は|私にとっては)\s*",
         "",
         text,
     )
 
     # Common stiff preference endings observed from the brain.
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¥½ãã§ã™[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒå¥½ãã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が好きです[。.]?$",
+        r"\1のほうが好きかな。",
         text,
     )
 
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¥½ããªã‚“ã§ã™(?:ã‚ˆ)?[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒå¥½ãã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が好きなんです(?:よ)?[。.]?$",
+        r"\1のほうが好きかな。",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒã„ã„ã‚“ã§ã™(?:ã‚ˆ)?[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)がいいんです(?:よ)?[。.]?$",
+        r"\1のほうがいいかな。",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒ(?:çµ¶å¯¾)?ã„ã„ã§ã™ã‚ˆ?[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が(?:絶対)?いいですよ?[。.]?$",
+        r"\1のほうがいいかな。",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒã„ã„ã§ã™[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)がいいです[。.]?$",
+        r"\1のほうがいいかな。",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¿ƒåœ°ã„ã„ã¨æ€ã£ã¦ã„ã¾ã™[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒå¿ƒåœ°ã„ã„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が心地いいと思っています[。.]?$",
+        r"\1のほうが心地いいかな。",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒé­…åŠ›çš„ã§ã™ã­[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒé­…åŠ›çš„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が魅力的ですね[。.]?$",
+        r"\1のほうが魅力的かな。",
         text,
     )
 
 
     text = re.sub(
-        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒé­…åŠ›çš„ã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
-        r"\1ã®ã»ã†ãŒé­…åŠ›çš„ã‹ãªã€‚",
+        r"(.+?)(?:のほう|の方)が魅力的です(?:よ|ね)?[。.]?$",
+        r"\1のほうが魅力的かな。",
         text,
     )
 
     text = re.sub(
-        r"^(.+?)ãŒå¥½ãã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
-        r"\1ãŒå¥½ãã‹ãªã€‚",
+        r"^(.+?)が好きです(?:よ|ね)?[。.]?$",
+        r"\1が好きかな。",
         text,
     )
 
     text = re.sub(
-        r"^(.+?)ãŒã„ã„ã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
-        r"\1ãŒã„ã„ã‹ãªã€‚",
+        r"^(.+?)がいいです(?:よ|ね)?[。.]?$",
+        r"\1がいいかな。",
         text,
     )
 
     text = re.sub(
-        r"ã‚†ã£ãã‚Šä¼‘ã‚ã¦ã­[ã€‚.]?$",
-        "ã‚†ã£ãã‚Šä¼‘ã‚“ã§ã­ã€‚",
+        r"ゆっくり休めてね[。.]?$",
+        "ゆっくり休んでね。",
         text,
     )
 
     # Observed malformed casual conjugation.
-    text = text.replace("é ‘å¼µãªãã¦", "é ‘å¼µã‚‰ãªãã¦")
+    text = text.replace("頑張なくて", "頑張らなくて")
 
     return text
 
