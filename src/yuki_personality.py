@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import json
 import re
 
@@ -247,11 +247,11 @@ def validate_reply(user_text, reply, state=None):
         )
 
         false_agreement_markers = (
-            "私も",
-            "僕も",
-            "同じだ",
-            "同じです",
-            "その通り",
+            "ç§ã‚‚",
+            "åƒ•ã‚‚",
+            "åŒã˜ã ",
+            "åŒã˜ã§ã™",
+            "ãã®é€šã‚Š",
         )
 
         if any(
@@ -265,8 +265,8 @@ def validate_reply(user_text, reply, state=None):
 
         for term in other_terms:
             wrong_stance_patterns = (
-                rf"{re.escape(term)}.{{0,8}}(?:派|好き|好み|最高|いい|良い|心地いい)",
-                rf"{re.escape(term)}.*?(?:ほう|方).*?(?:好き|いい|良い|好み)",
+                rf"{re.escape(term)}.{{0,8}}(?:æ´¾|å¥½ã|å¥½ã¿|æœ€é«˜|ã„ã„|è‰¯ã„|å¿ƒåœ°ã„ã„)",
+                rf"{re.escape(term)}.*?(?:ã»ã†|æ–¹).*?(?:å¥½ã|ã„ã„|è‰¯ã„|å¥½ã¿)",
             )
 
             if any(
@@ -294,12 +294,27 @@ def validate_reply(user_text, reply, state=None):
         r"(?:\u79c1|\u50d5|\u81ea\u5206)\u3082.{0,12}\u75b2\u308c",
         r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,8}\u75b2\u308c",
 
-        # Mirrored lived experience: "私も今日..." / "私も最近..."
+        # Mirrored lived experience: "ç§ã‚‚ä»Šæ—¥..." / "ç§ã‚‚æœ€è¿‘..."
         r"(?:\u79c1|\u50d5)\u3082.{0,6}(?:\u4eca\u65e5|\u6700\u8fd1).{0,24}",
+
+        # Invented personal media/activity experience.
+        # Example: first-person claim of personally getting hooked on media.
+        r"(?:\u79c1|\u50d5)\u3082.{0,20}\u30cf\u30de",
+
+        # Invented future real-world/media action.
+        r"(?:\u79c1|\u50d5)\u3082.{0,20}(?:\u8a66\u3057\u3066\u307f\u3088\u3046|\u3084\u3063\u3066\u307f\u3088\u3046|\u898b\u3066\u307f\u3088\u3046|\u884c\u3063\u3066\u307f\u3088\u3046|\u98df\u3079\u3066\u307f\u3088\u3046)",
+
+        # First-person real/media activity claims.
+        # Covers forms such as:
+        # "I tried playing it", "I played it", "I tried watching it".
+        r"(?:\u79c1|\u50d5|\u81ea\u5206)(?:\u3082|\u306f)?.{0,24}(?:\u904a\u3093\u3067|\u30d7\u30ec\u30a4\u3057\u3066|\u8a66\u3057\u3066\u307f|\u898b\u3066\u307f|\u884c\u3063\u3066\u307f|\u98df\u3079\u3066\u307f)",
+
+        # Claims of doing physical/media activities together with the user.
+        r"\u4e00\u7dd2\u306b.{0,16}(?:\u30d7\u30ec\u30a4|\u904a\u3076|\u904a\u3093\u3067|\u898b\u308b|\u884c\u304f|\u98df\u3079\u308b)",
 
         # Invented sleep / wake habits or routines.
         r"(?:\u79c1|\u50d5|\u81ea\u5206).{0,12}(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057)",
-        r"\u6700\u8fd1[、,\s]*(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057).{0,20}",
+        r"\u6700\u8fd1[ã€,\s]*(?:\u5bdd\u308b|\u5bdd\u305f|\u8d77\u304d\u308b|\u65e9\u8d77\u304d|\u591c\u66f4\u304b\u3057).{0,20}",
         r"\u305f\u307e\u306b\u306f.{0,6}\u65e9\u8d77\u304d",
     )
 
@@ -341,7 +356,7 @@ def clean_reply_structure(user_text, reply):
         if not line:
             continue
 
-        if user and line.rstrip("。！？!?") == user.rstrip("。！？!?"):
+        if user and line.rstrip("ã€‚ï¼ï¼Ÿ!?") == user.rstrip("ã€‚ï¼ï¼Ÿ!?"):
             continue
 
         lines.append(line)
@@ -352,7 +367,7 @@ def clean_reply_structure(user_text, reply):
         return text
 
     # Keep at most two spoken sentences.
-    parts = re.split(r"(?<=[。！？!?])\s*", text)
+    parts = re.split(r"(?<=[ã€‚ï¼ï¼Ÿ!?])\s*", text)
     sentences = [part.strip() for part in parts if part.strip()]
 
     if len(sentences) > 2:
@@ -369,89 +384,89 @@ def normalize_spoken_japanese(reply):
 
     # Remove common assistant-like agreement opener.
     text = re.sub(
-        r"^そうですね[、。]?\s*",
+        r"^ãã†ã§ã™ã­[ã€ã€‚]?\s*",
         "",
         text,
     )
 
     # Preference-style replies: remove unnecessary self-reference.
     text = re.sub(
-        r"^(?:でも\s*)?(?:私は|私にとっては)\s*",
+        r"^(?:ã§ã‚‚\s*)?(?:ç§ã¯|ç§ã«ã¨ã£ã¦ã¯)\s*",
         "",
         text,
     )
 
     # Common stiff preference endings observed from the brain.
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が好きです[。.]?$",
-        r"\1のほうが好きかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¥½ãã§ã™[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒå¥½ãã‹ãªã€‚",
         text,
     )
 
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が好きなんです(?:よ)?[。.]?$",
-        r"\1のほうが好きかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¥½ããªã‚“ã§ã™(?:ã‚ˆ)?[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒå¥½ãã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)がいいんです(?:よ)?[。.]?$",
-        r"\1のほうがいいかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒã„ã„ã‚“ã§ã™(?:ã‚ˆ)?[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が(?:絶対)?いいですよ?[。.]?$",
-        r"\1のほうがいいかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒ(?:çµ¶å¯¾)?ã„ã„ã§ã™ã‚ˆ?[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)がいいです[。.]?$",
-        r"\1のほうがいいかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒã„ã„ã§ã™[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒã„ã„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が心地いいと思っています[。.]?$",
-        r"\1のほうが心地いいかな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒå¿ƒåœ°ã„ã„ã¨æ€ã£ã¦ã„ã¾ã™[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒå¿ƒåœ°ã„ã„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が魅力的ですね[。.]?$",
-        r"\1のほうが魅力的かな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒé­…åŠ›çš„ã§ã™ã­[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒé­…åŠ›çš„ã‹ãªã€‚",
         text,
     )
 
 
     text = re.sub(
-        r"(.+?)(?:のほう|の方)が魅力的です(?:よ|ね)?[。.]?$",
-        r"\1のほうが魅力的かな。",
+        r"(.+?)(?:ã®ã»ã†|ã®æ–¹)ãŒé­…åŠ›çš„ã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
+        r"\1ã®ã»ã†ãŒé­…åŠ›çš„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"^(.+?)が好きです(?:よ|ね)?[。.]?$",
-        r"\1が好きかな。",
+        r"^(.+?)ãŒå¥½ãã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
+        r"\1ãŒå¥½ãã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"^(.+?)がいいです(?:よ|ね)?[。.]?$",
-        r"\1がいいかな。",
+        r"^(.+?)ãŒã„ã„ã§ã™(?:ã‚ˆ|ã­)?[ã€‚.]?$",
+        r"\1ãŒã„ã„ã‹ãªã€‚",
         text,
     )
 
     text = re.sub(
-        r"ゆっくり休めてね[。.]?$",
-        "ゆっくり休んでね。",
+        r"ã‚†ã£ãã‚Šä¼‘ã‚ã¦ã­[ã€‚.]?$",
+        "ã‚†ã£ãã‚Šä¼‘ã‚“ã§ã­ã€‚",
         text,
     )
 
     # Observed malformed casual conjugation.
-    text = text.replace("頑張なくて", "頑張らなくて")
+    text = text.replace("é ‘å¼µãªãã¦", "é ‘å¼µã‚‰ãªãã¦")
 
     return text
 
@@ -473,6 +488,19 @@ def build_boundary_fallback(user_text, issues):
             "\u3058\u3083\u3042\u3001\u4f55\u304b\u8efd\u304f"
             "\u6c17\u5206\u8ee2\u63db\u3067\u304d\u308b\u3053\u3068\u304c"
             "\u3042\u308b\u3068\u3044\u3044\u304b\u3082\u3002"
+        )
+
+    if any(
+        word in text
+        for word in (
+            "\u30b2\u30fc\u30e0",
+            "\u30a2\u30cb\u30e1",
+            "\u6620\u753b",
+        )
+    ):
+        return (
+            "\u610f\u5916\u3068\u9762\u767d\u3044\u3088\u306d\u3002"
+            "\u305d\u3046\u3044\u3046\u306e\u306f\u5b09\u3057\u3044\u8aa4\u7b97\u3060\u306d\u3002"
         )
 
     if any(
@@ -607,3 +635,4 @@ def build_system(tone_state, user_text="", base_personality=None):
         parts.append(tone)
 
     return "\n".join(part for part in parts if part)
+

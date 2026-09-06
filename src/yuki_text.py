@@ -1,17 +1,101 @@
+import json
+import os
 import time
+import urllib.request
 
 from openai import OpenAI
 import yuki_personality as personality
 
 
-BRAIN_URL = "http://127.0.0.1:8084/v1"
+BRAIN_URL = os.environ.get(
+    "YUKI_BRAIN_URL",
+    "http://127.0.0.1:8084/v1",
+)
+
+BRAIN_MODEL = os.environ.get(
+    "YUKI_BRAIN_MODEL",
+    "",
+)
+
+BRAIN_BACKEND = os.environ.get(
+    "YUKI_BRAIN_BACKEND",
+    "openai",
+).lower()
+
+OLLAMA_URL = os.environ.get(
+    "YUKI_OLLAMA_URL",
+    "http://127.0.0.1:11434/api/chat",
+)
+
+
+def call_brain(brain, messages):
+    if BRAIN_BACKEND == "ollama":
+        payload = {
+            "model": BRAIN_MODEL or "qwen3:14b",
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "options": {
+                "num_predict": 768,
+            },
+        }
+
+        data = json.dumps(
+            payload,
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+        request = urllib.request.Request(
+            OLLAMA_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=120,
+        ) as response:
+            result = json.loads(
+                response.read().decode("utf-8")
+            )
+
+        reply = (
+            result.get("message", {}).get("content", "")
+            or ""
+        ).strip()
+
+        finish_reason = (
+            result.get("done_reason")
+            or ("stop" if result.get("done") else "unknown")
+        )
+
+        return reply, finish_reason
+
+    response = brain.chat.completions.create(
+        model=BRAIN_MODEL,
+        messages=messages,
+        max_tokens=768,
+    )
+
+    choice = response.choices[0]
+
+    return (
+        (choice.message.content or "").strip(),
+        finish_reason or "unknown",
+    )
 
 
 def main():
-    brain = OpenAI(
-        base_url=BRAIN_URL,
-        api_key="dummy",
-    )
+    brain = None
+
+    if BRAIN_BACKEND != "ollama":
+        brain = OpenAI(
+            base_url=BRAIN_URL,
+            api_key="dummy",
+        )
 
     print()
     print("YUKI TEXT")
@@ -47,17 +131,13 @@ def main():
         ]
 
         try:
-            response = brain.chat.completions.create(
-                model="",
-                messages=messages,
-                max_tokens=768,
+            reply, finish_reason = call_brain(
+                brain,
+                messages,
             )
         except Exception as exc:
             print(f"[brain error: {exc}]")
             continue
-
-        choice = response.choices[0]
-        reply = (choice.message.content or "").strip()
 
         reply = personality.clean_reply_structure(
             user_text,
@@ -83,6 +163,9 @@ def main():
         ]
 
         if hard_failures:
+            if os.environ.get("YUKI_DEBUG_GUARD") == "1":
+                print(f"[rejected reply: {reply}]")
+
             fallback = personality.build_boundary_fallback(
                 user_text,
                 hard_failures,
@@ -116,7 +199,7 @@ def main():
         print("YUKI:", reply if reply else "[no response]")
         print(
             f"[brain {elapsed:.3f}s | "
-            f"finish {choice.finish_reason}]"
+            f"finish {finish_reason}]"
         )
 
         remaining_hard = [
