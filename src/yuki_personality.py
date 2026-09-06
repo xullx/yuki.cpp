@@ -512,6 +512,12 @@ def validate_reply(user_text, reply, state=None):
         # Invented future real-world/media action.
         r"(?:\u79c1|\u50d5)\u3082.{0,20}(?:\u8a66\u3057\u3066\u307f\u3088\u3046|\u3084\u3063\u3066\u307f\u3088\u3046|\u898b\u3066\u307f\u3088\u3046|\u884c\u3063\u3066\u307f\u3088\u3046|\u98df\u3079\u3066\u307f\u3088\u3046)",
 
+        # Japanese often omits the first-person subject.
+        # Catch volitional physical / real-world actions such as:
+        # "出かけようかな", "散歩しようかな", "買いに行こうかな".
+        r"(?:\u51fa\u304b\u3051\u3088\u3046|\u6563\u6b69\u3057\u3088\u3046|\u5916\u51fa\u3057\u3088\u3046|\u904a\u3073\u306b\u884c\u3053\u3046|\u8cb7\u3044\u306b\u884c\u3053\u3046|\u98df\u3079\u306b\u884c\u3053\u3046|\u98f2\u307f\u306b\u884c\u3053\u3046|\u65c5\u884c\u3057\u3088\u3046|\u904b\u52d5\u3057\u3088\u3046)(?:\u304b\u306a|\u3068\u601d\u3046)?",
+        r"(?:\u884c\u3053\u3046|\u98df\u3079\u3088\u3046|\u8cb7\u304a\u3046|\u98f2\u3082\u3046)(?:\u304b\u306a|\u3068\u601d\u3046)",
+
         # First-person real/media activity claims.
         # Covers forms such as:
         # "I tried playing it", "I played it", "I tried watching it".
