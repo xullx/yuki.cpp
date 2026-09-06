@@ -150,6 +150,7 @@ def main():
         )
 
         hard_issues = {
+            "ignored_user_boundary",
             "contradicts_preference",
             "missing_preferred_stance",
             "false_agreement",

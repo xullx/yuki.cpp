@@ -497,6 +497,43 @@ def validate_reply(user_text, reply, state=None):
                     issues.append("contradicts_preference")
                     break
 
+    # Explicit conversational boundaries.
+    #
+    # If the user explicitly says they do not want comfort/advice,
+    # do not let YUKI turn the reply into reassurance, instruction,
+    # or a support-style follow-up question.
+    user_boundary_patterns = (
+        r"\u6170\u3081\u3066(?:\u307b\u3057\u3044|\u6b32\u3057\u3044)\u308f\u3051\u3058\u3083\u306a\u3044",
+        r"(?:\u30a2\u30c9\u30d0\u30a4\u30b9|\u52a9\u8a00|\u63d0\u6848)(?:\u306f|\u3082)?.{0,8}(?:\u3044\u3089\u306a\u3044|\u8981\u3089\u306a\u3044|\u4e0d\u8981|\u6c42\u3081\u3066\u306a\u3044|\u6c42\u3081\u3066\u3044\u306a\u3044)",
+        r"(?:\u6170\u3081|\u52b1\u307e\u3057).{0,8}(?:\u3044\u3089\u306a\u3044|\u8981\u3089\u306a\u3044|\u306a\u304f\u3066\u3044\u3044)",
+    )
+
+    reply_support_patterns = (
+        # "...したほうがいい", "...しておいたほうがいい"
+        r".{0,24}(?:\u3057\u305f|\u3059\u308b|\u3057\u3066\u304a\u3044\u305f|\u3084\u3063\u305f|\u3084\u308b)(?:\u307b\u3046|\u65b9)\u304c\u3044\u3044",
+
+        # "無理に〜しなくてもいい"
+        r"\u7121\u7406\u306b.{0,20}(?:\u3057\u306a\u304f\u3066|\u3057\u306a\u3044|\u52d5\u304b\u306a\u304f\u3066).{0,8}\u3044\u3044",
+
+        # Rest / self-care prescriptions.
+        r"(?:\u4f11\u3080|\u4f11\u3093\u3067|\u3086\u3063\u304f\u308a).{0,18}(?:\u5927\u4e8b|\u5927\u5207|\u3044\u3044)",
+
+        # Support-agent style invitations.
+        r"(?:\u4f55\u304b)?\u8a71\u3057\u305f\u3044.{0,12}(?:\u3042\u308b|\u3053\u3068)",
+        r"(?:\u8a71\u3057\u3066|\u8a71\u3057\u305f\u304f\u306a\u3063\u305f\u3089).{0,16}(?:\u3044\u3044|\u805e\u304f|\u805e\u3044\u3066)",
+    )
+
+    explicit_boundary = any(
+        re.search(pattern, user_text)
+        for pattern in user_boundary_patterns
+    )
+
+    if explicit_boundary and any(
+        re.search(pattern, reply)
+        for pattern in reply_support_patterns
+    ):
+        issues.append("ignored_user_boundary")
+
     embodiment_patterns = (
         # Physical fatigue claimed as YUKI's own state.
         r"(?:\u79c1|\u50d5|\u81ea\u5206)\u3082.{0,12}\u75b2\u308c",
@@ -726,6 +763,28 @@ def normalize_spoken_japanese(reply):
 def build_boundary_fallback(user_text, issues):
     text = str(user_text or "")
 
+    # Explicit user request not to receive comfort/advice.
+    if "ignored_user_boundary" in issues:
+        if "\u75b2\u308c" in text:
+            return (
+                "\u305d\u3063\u304b\u3001"
+                "\u3061\u3087\u3063\u3068"
+                "\u75b2\u308c\u305f\u3093\u3060\u306d\u3002"
+            )
+
+        if "\u843d\u3061\u8fbc" in text:
+            return (
+                "\u305d\u3063\u304b\u3001"
+                "\u4eca\u65e5\u306f\u3061\u3087\u3063\u3068"
+                "\u843d\u3061\u8fbc\u3093\u3067\u308b\u3093\u3060\u306d\u3002"
+            )
+
+        return (
+            "\u305d\u3063\u304b\u3001"
+            "\u305d\u3046\u3044\u3046"
+            "\u611f\u3058\u306a\u3093\u3060\u306d\u3002"
+        )
+
     if "fake_physical_experience" not in issues:
         return ""
 
@@ -752,7 +811,8 @@ def build_boundary_fallback(user_text, issues):
     ):
         return (
             "\u610f\u5916\u3068\u9762\u767d\u3044\u3088\u306d\u3002"
-            "\u305d\u3046\u3044\u3046\u306e\u306f\u5b09\u3057\u3044\u8aa4\u7b97\u3060\u306d\u3002"
+            "\u305d\u3046\u3044\u3046\u306e\u306f"
+            "\u5b09\u3057\u3044\u8aa4\u7b97\u3060\u306d\u3002"
         )
 
     if any(
