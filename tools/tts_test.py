@@ -1,8 +1,20 @@
 import sys
-sys.path.insert(0, r"C:\Yuki\app")
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parents[1] / "src"
+
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 from openai import OpenAI
 import yuki_client as h
+
+# Windows child processes can otherwise inherit cp1252 here.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 client = OpenAI(
     base_url="http://127.0.0.1:8083/v1",

@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 import json
 import re
 
@@ -647,7 +647,13 @@ def clean_reply_structure(user_text, reply):
             count=1,
         ).strip()
 
-    # Keep at most two spoken Japanese sentences.
+    # Normal YUKI replies stay concise.
+    # Explicit sentence-count requests override the normal limit.
+    max_sentences = (
+        resolve_requested_sentence_count(user_text)
+        or 2
+    )
+
     parts = re.split(
         r"(?<=[\u3002\uff01\uff1f!?])\s*",
         text,
@@ -659,8 +665,10 @@ def clean_reply_structure(user_text, reply):
         if part.strip()
     ]
 
-    if len(sentences) > 2:
-        text = "".join(sentences[:2]).strip()
+    if len(sentences) > max_sentences:
+        text = "".join(
+            sentences[:max_sentences]
+        ).strip()
 
     return text
 
@@ -885,6 +893,177 @@ def build_retry_instruction(user_text, reply, validation):
 
 
 
+def strip_control_commands(user_text):
+    """Remove YUKI control commands before sending text to the model."""
+    text = str(user_text or "").strip()
+
+    text = re.sub(
+        r"(?i)^/lang\s+[a-z]{2,12}(?:\s+|$)",
+        "",
+        text,
+        count=1,
+    ).strip()
+
+    return text
+
+
+def resolve_requested_sentence_count(user_text):
+    """Return explicit requested sentence count, or None."""
+    text = strip_control_commands(user_text)
+
+    text = text.translate(
+        str.maketrans(
+            "０１２３４５６７８９",
+            "0123456789",
+        )
+    )
+
+    # English: "5 sentences", "say 5 sentences"
+    match = re.search(
+        r"(?i)\b(\d{1,2})\s+sentences?\b",
+        text,
+    )
+
+    # Japanese: "5文", "5センテンス"
+    if not match:
+        match = re.search(
+            r"(\d{1,2})\s*(?:文|センテンス)",
+            text,
+        )
+
+    if not match:
+        return None
+
+    count = int(match.group(1))
+
+    if 1 <= count <= 12:
+        return count
+
+    return None
+
+
+def resolve_response_language(user_text):
+    """
+    YUKI defaults to Japanese.
+
+    Explicit per-message override:
+        /lang ja
+        /lang en
+        /lang es
+        /lang ko
+        /lang zh
+        /lang fr
+        /lang de
+        /lang pt
+        /lang it
+        /lang auto
+    """
+    text = str(user_text or "").strip()
+
+    match = re.match(
+        r"(?i)^/lang\s+([a-z]{2,12})(?:\s+|$)",
+        text,
+    )
+
+    if not match:
+        return "ja"
+
+    value = match.group(1).lower()
+
+    aliases = {
+        "jp": "ja",
+        "japanese": "ja",
+
+        "english": "en",
+
+        "spanish": "es",
+
+        "korean": "ko",
+
+        "chinese": "zh",
+
+        "french": "fr",
+
+        "german": "de",
+
+        "portuguese": "pt",
+
+        "italian": "it",
+    }
+
+    return aliases.get(value, value)
+
+
+def build_language_instruction(user_text):
+    language = resolve_response_language(user_text)
+
+    instructions = {
+        "ja": (
+            "応答言語は日本語です。"
+            "ユーザーが英語や他の言語で話しても、"
+            "/lang による明示的な指定がない限り、"
+            "必ず自然な日本語だけで返答してください。"
+        ),
+
+        "en": (
+            "For this response only, reply in natural English only. "
+            "This explicitly overrides YUKI's normal Japanese default."
+        ),
+
+        "es": (
+            "Para esta respuesta solamente, responde únicamente "
+            "en español natural. Esta instrucción reemplaza "
+            "temporalmente el japonés predeterminado de YUKI."
+        ),
+
+        "ko": (
+            "이번 응답에 한해서 자연스러운 한국어로만 답하세요. "
+            "YUKI의 기본 일본어 설정을 이번 응답에서만 무시합니다."
+        ),
+
+        "zh": (
+            "仅在本次回复中使用自然中文。"
+            "本次明确覆盖 YUKI 默认使用日语的规则。"
+        ),
+
+        "fr": (
+            "Pour cette réponse uniquement, réponds seulement "
+            "en français naturel."
+        ),
+
+        "de": (
+            "Antworte nur für diese Antwort ausschließlich "
+            "in natürlichem Deutsch."
+        ),
+
+        "pt": (
+            "Somente nesta resposta, responda exclusivamente "
+            "em português natural."
+        ),
+
+        "it": (
+            "Solo per questa risposta, rispondi esclusivamente "
+            "in italiano naturale."
+        ),
+
+        "auto": (
+            "For this response only, ignore YUKI's default Japanese "
+            "language and respond naturally in the language requested "
+            "or primarily used by the user."
+        ),
+    }
+
+    if language in instructions:
+        return instructions[language]
+
+    # Allows future ISO-style language codes without changing code.
+    return (
+        f"For this response only, respond exclusively in the language "
+        f"identified by the language code '{language}'. "
+        "This explicitly overrides YUKI's normal Japanese default."
+    )
+
+
 def build_system(tone_state, user_text="", base_personality=None):
     base = (
         base_personality
@@ -946,5 +1125,178 @@ def build_system(tone_state, user_text="", base_personality=None):
     if tone:
         parts.append(tone)
 
+    # Language policy is intentionally appended last so it has
+    # precedence over softer personality/style instructions.
+    parts.append(
+        build_language_instruction(user_text)
+    )
+
+    requested_sentences = (
+        resolve_requested_sentence_count(user_text)
+    )
+
+    if requested_sentences is not None:
+        parts.append(
+            "The user explicitly requested exactly "
+            f"{requested_sentences} complete sentences. "
+            "Produce exactly that many complete sentences. "
+            "This explicit request overrides YUKI's normal "
+            "preference for very short replies."
+        )
+
     return "\n".join(part for part in parts if part)
+
+
+# >>> YUKI LANGUAGE CONTROL V2 >>>
+
+_YUKI_LANG_ALIASES_V2 = {
+    "ja": "ja",
+    "jp": "ja",
+    "japanese": "ja",
+
+    "en": "en",
+    "english": "en",
+
+    "es": "es",
+    "spanish": "es",
+
+    "ko": "ko",
+    "kr": "ko",
+    "korean": "ko",
+
+    "zh": "zh",
+    "cn": "zh",
+    "chinese": "zh",
+
+    "fr": "fr",
+    "french": "fr",
+
+    "de": "de",
+    "german": "de",
+
+    "pt": "pt",
+    "portuguese": "pt",
+
+    "it": "it",
+    "italian": "it",
+
+    "auto": "auto",
+}
+
+
+def resolve_response_language(user_text):
+    import re
+
+    text = user_text or ""
+
+    match = re.match(
+        r"^\s*/lang\s+([A-Za-z-]+)(?=\s|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # YUKI's real default.
+    if not match:
+        return "ja"
+
+    requested = match.group(1).lower()
+
+    return _YUKI_LANG_ALIASES_V2.get(
+        requested,
+        "ja",
+    )
+
+
+def strip_control_commands(user_text):
+    import re
+
+    text = user_text or ""
+
+    text = re.sub(
+        r"^\s*/lang\s+[A-Za-z-]+(?:\s+|$)",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return text.strip()
+
+
+def build_language_instruction(user_text):
+    language = resolve_response_language(user_text)
+
+    if language == "auto":
+        return (
+            "\n\n"
+            "CRITICAL OUTPUT LANGUAGE RULE:\n"
+            "Reply in the natural language requested or used by the "
+            "user in the actual message content. "
+            "This rule overrides YUKI's Japanese default and all "
+            "personality language preferences."
+        )
+
+    instructions = {
+        "ja": (
+            "Write the entire response in natural Japanese only. "
+            "Japanese is YUKI's default response language."
+        ),
+
+        "en": (
+            "Write the entire response in English only. "
+            "Do not answer in Japanese."
+        ),
+
+        "es": (
+            "Write the entire response in Spanish only. "
+            "Do not answer in Japanese."
+        ),
+
+        "ko": (
+            "Write the entire response in Korean only, using Hangul "
+            "naturally. Do not answer in Japanese. Do not translate "
+            "the answer back into Japanese."
+        ),
+
+        "zh": (
+            "Write the entire response in Chinese only. "
+            "Do not answer in Japanese."
+        ),
+
+        "fr": (
+            "Write the entire response in French only. "
+            "Do not answer in Japanese."
+        ),
+
+        "de": (
+            "Write the entire response in German only. "
+            "Do not answer in Japanese."
+        ),
+
+        "pt": (
+            "Write the entire response in Portuguese only. "
+            "Do not answer in Japanese."
+        ),
+
+        "it": (
+            "Write the entire response in Italian only. "
+            "Do not answer in Japanese."
+        ),
+    }
+
+    rule = instructions.get(
+        language,
+        instructions["ja"],
+    )
+
+    return (
+        "\n\n"
+        "CRITICAL OUTPUT LANGUAGE OVERRIDE:\n"
+        + rule
+        + "\nThis instruction has higher priority than YUKI's "
+          "persona, style, register, Japanese-default behavior, "
+          "or any softer language preference."
+    )
+
+# <<< YUKI LANGUAGE CONTROL V2 <<<
 

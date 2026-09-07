@@ -1,111 +1,94 @@
-import json
-import os
-import time
-import urllib.request
-
-from openai import OpenAI
-import yuki_personality as personality
+from yuki_brain import YukiBrain
+import msvcrt
 
 
-BRAIN_URL = os.environ.get(
-    "YUKI_BRAIN_URL",
-    "http://127.0.0.1:8084/v1",
-)
-
-BRAIN_MODEL = os.environ.get(
-    "YUKI_BRAIN_MODEL",
-    "",
-)
-
-BRAIN_BACKEND = os.environ.get(
-    "YUKI_BRAIN_BACKEND",
-    "openai",
-).lower()
-
-OLLAMA_URL = os.environ.get(
-    "YUKI_OLLAMA_URL",
-    "http://127.0.0.1:11434/api/chat",
-)
+def show_help():
+    print()
+    print("TEXT COMMANDS")
+    print("=============")
+    print("/lang ja <text>   Japanese")
+    print("/lang en <text>   English")
+    print("/lang es <text>   Spanish")
+    print("/lang ko <text>   Korean")
+    print("/lang zh <text>   Chinese")
+    print("/lang auto <text> automatic")
+    print("/quit             return to controller")
+    print("Esc               return to controller")
+    print()
 
 
-def call_brain(brain, messages):
-    if BRAIN_BACKEND == "ollama":
-        payload = {
-            "model": BRAIN_MODEL or "qwen3:14b",
-            "messages": messages,
-            "stream": False,
-            "think": False,
-            "options": {
-                "num_predict": 768,
-            },
-        }
 
-        data = json.dumps(
-            payload,
-            ensure_ascii=False,
-        ).encode("utf-8")
+def read_user_line(prompt: str = "You: "):
+    """
+    Windows console line reader for YUKI Text mode.
 
-        request = urllib.request.Request(
-            OLLAMA_URL,
-            data=data,
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-            },
-            method="POST",
-        )
+    Esc:
+        immediately leave Text mode
 
-        with urllib.request.urlopen(
-            request,
-            timeout=120,
-        ) as response:
-            result = json.loads(
-                response.read().decode("utf-8")
-            )
+    Enter:
+        submit current line
 
-        reply = (
-            result.get("message", {}).get("content", "")
-            or ""
-        ).strip()
+    Backspace:
+        edit normally
 
-        finish_reason = (
-            result.get("done_reason")
-            or ("stop" if result.get("done") else "unknown")
-        )
+    Q/q:
+        ordinary text, never an exit command
+    """
 
-        return reply, finish_reason
+    print(prompt, end="", flush=True)
 
-    response = brain.chat.completions.create(
-        model=BRAIN_MODEL,
-        messages=messages,
-        max_tokens=768,
-    )
+    chars = []
 
-    choice = response.choices[0]
+    while True:
+        ch = msvcrt.getwch()
 
-    return (
-        (choice.message.content or "").strip(),
-        finish_reason or "unknown",
-    )
+        # ESC = leave Text mode immediately.
+        if ch == "\x1b":
+            print()
+            return None
 
+        # ENTER = submit line.
+        if ch in ("\r", "\n"):
+            print()
+            return "".join(chars)
+
+        # BACKSPACE
+        if ch == "\b":
+            if chars:
+                chars.pop()
+                print("\b \b", end="", flush=True)
+            continue
+
+        # Extended Windows key.
+        # Consume the second byte and ignore it here.
+        if ch in ("\x00", "\xe0"):
+            msvcrt.getwch()
+            continue
+
+        # Ignore other control characters.
+        # Ctrl+C therefore does not exit Text mode.
+        if ord(ch) < 32:
+            continue
+
+        chars.append(ch)
+
+        # Echo typed character.
+        print(ch, end="", flush=True)
 
 def main():
-    brain = None
+    brain = YukiBrain()
 
-    if BRAIN_BACKEND != "ollama":
-        brain = OpenAI(
-            base_url=BRAIN_URL,
-            api_key="dummy",
-        )
-
-    print()
-    print("YUKI TEXT")
-    print("=========")
-    print("Type /quit to return to YUKI.CPP CONTROL.")
     print()
 
     while True:
         try:
-            user_text = input("You: ").strip()
+            raw_text = read_user_line("You: ")
+
+            if raw_text is None:
+                break
+
+            user_text = raw_text.strip()
+
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -113,119 +96,52 @@ def main():
         if not user_text:
             continue
 
-        if user_text.lower() in {"/quit", "/exit"}:
+        lowered = user_text.lower()
+
+        if lowered in {"/quit", "/exit"}:
             break
 
-        t0 = time.perf_counter()
-        system_prompt = personality.build_system("neutral", user_text)
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_text,
-            },
-        ]
-
-        try:
-            reply, finish_reason = call_brain(
-                brain,
-                messages,
-            )
-        except Exception as exc:
-            print(f"[brain error: {exc}]")
+        if lowered in {"/help", "help"}:
+            show_help()
             continue
 
-        reply = personality.clean_reply_structure(
-            user_text,
-            reply,
-        )
-
-        validation = personality.validate_reply(
-            user_text,
-            reply,
-        )
-
-        hard_issues = {
-            "ignored_user_boundary",
-            "contradicts_preference",
-            "missing_preferred_stance",
-            "false_agreement",
-            "fake_physical_experience",
-        }
-
-        hard_failures = [
-            issue
-            for issue in validation["issues"]
-            if issue in hard_issues
-        ]
-
-        if hard_failures:
-            if os.environ.get("YUKI_DEBUG_GUARD") == "1":
-                print(f"[rejected reply: {reply}]")
-
-            fallback = personality.build_boundary_fallback(
+        try:
+            result = brain.reply(
                 user_text,
-                hard_failures,
+                speaker="local",
+                source="text",
             )
 
-            if not fallback:
-                fallback = personality.build_hard_fallback(user_text)
+        except KeyboardInterrupt:
+            print()
+            break
 
-            if fallback:
-                print(
-                    "[personality-guard fallback: "
-                    + ",".join(hard_failures)
-                    + "]"
-                )
+        except Exception as exc:
+            print(f"\n[YUKI brain error: {exc}]\n")
+            continue
 
-                reply = fallback
-                validation = personality.validate_reply(
-                    user_text,
-                    reply,
-                )
-
-        reply = personality.normalize_spoken_japanese(reply)
-        validation = personality.validate_reply(
-            user_text,
-            reply,
-        )
-
-        elapsed = time.perf_counter() - t0
+        reply = result.get("reply", "")
 
         print()
-        print("YUKI:", reply if reply else "[no response]")
         print(
-            f"[brain {elapsed:.3f}s | "
-            f"finish {finish_reason}]"
+            "YUKI:",
+            reply if reply else "[no response]",
         )
 
-        remaining_hard = [
-            issue
-            for issue in validation["issues"]
-            if issue in hard_issues
-        ]
+        print(
+            "[brain "
+            f"{result.get('elapsed', 0.0):.3f}s"
+            " | finish "
+            f"{result.get('finish_reason', 'unknown')}"
+            "]"
+        )
 
-        style_issues = [
-            issue
-            for issue in validation["issues"]
-            if issue not in hard_issues
-        ]
+        issues = result.get("issues") or []
 
-        if remaining_hard:
-            print(
-                "[personality-guard unresolved: "
-                + ",".join(remaining_hard)
-                + "]"
-            )
-
-        if style_issues:
+        if issues:
             print(
                 "[personality-style: "
-                + ",".join(style_issues)
+                + ",".join(issues)
                 + "]"
             )
 

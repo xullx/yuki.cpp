@@ -75,12 +75,8 @@ def main():
         raise SystemExit("No microphone available.")
 
     print()
-    print("YUKI.CPP LIVE BRIDGE")
-    print("8083  Japanese Audio  ASR + TTS")
-    print("8084  LFM2.5-8B-A1B  Brain")
     print()
-    print("Mic -> ASR -> 8B -> TTS -> Speakers")
-    print("Press Ctrl+C to stop.")
+    # UI owned by yuki-mode-voice.ps1
     print()
 
     while True:
@@ -227,11 +223,12 @@ def main():
             break
 
         except Exception as exc:
-            print(f"\n[Bridge error: {exc}]")
+            print(f"\n[Voice error: {exc}]")
 
 
 if __name__ == "__main__":
     main()
+
 
 
 

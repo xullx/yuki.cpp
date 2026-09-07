@@ -24,3 +24,4 @@ mic_profile.json
 
 # Local backup snapshots
 *.pre-*
+*.bak

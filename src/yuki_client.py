@@ -33,7 +33,6 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
 # Suppress ALSA/JACK warnings during PyAudio init
-import os
 import contextlib
 
 
