@@ -315,36 +315,168 @@ function Parse-BenchJson {
         throw "bench.json is empty."
     }
 
-    # Deliberately use the same parsing form that successfully
-    # repaired the earlier decode benchmark.
-    $rows = @(
-        ConvertFrom-Json (
-            Get-Content $Path -Raw
-        )
+
+    # --------------------------------------------------------
+    # NORMALIZE TOP-LEVEL JSON
+    #
+    # Windows PowerShell 5.1 can return a top-level JSON array
+    # as one System.Object[] pipeline object.
+    #
+    # PowerShell 7 commonly enumerates it differently.
+    #
+    # We explicitly flatten exactly one top-level array so each
+    # llama-bench JSON record is always one row.
+    # --------------------------------------------------------
+
+    $parsed = ConvertFrom-Json (
+        Get-Content $Path -Raw
     )
 
-    if ($rows.Count -eq 0) {
-        throw "bench.json contains no top-level benchmark rows."
+    $rows = @()
+
+    if ($parsed -is [System.Array]) {
+
+        foreach ($item in $parsed) {
+            $rows += ,$item
+        }
     }
+    else {
+
+        $rows += ,$parsed
+    }
+
+
+    if ($rows.Count -eq 0) {
+        throw "bench.json contains no benchmark rows."
+    }
+
+
+    # --------------------------------------------------------
+    # SCALAR VALIDATOR
+    #
+    # llama-bench fields such as n_prompt, n_gen, n_threads,
+    # etc. must be scalar in one result row.
+    #
+    # A one-element array is tolerated and normalized.
+    # A multi-element array is treated as a schema error.
+    # --------------------------------------------------------
+
+    function Get-ScalarValue {
+
+        param(
+            $Value,
+
+            [Parameter(Mandatory = $true)]
+            [string]$Field,
+
+            [Parameter(Mandatory = $true)]
+            [int]$RowIndex
+        )
+
+        if ($null -eq $Value) {
+            return $null
+        }
+
+        if ($Value -is [System.Array]) {
+
+            if ($Value.Count -eq 0) {
+                return $null
+            }
+
+            if ($Value.Count -eq 1) {
+                return $Value[0]
+            }
+
+            throw (
+                "Field '$Field' in benchmark row $RowIndex " +
+                "contains multiple values: [" +
+                (($Value | ForEach-Object { "$_" }) -join ", ") +
+                "]"
+            )
+        }
+
+        return $Value
+    }
+
 
     $measurements = @()
 
-    foreach ($row in $rows) {
 
-        if ($null -eq $row.avg_ts) {
+    for (
+        $rowIndex = 0;
+        $rowIndex -lt $rows.Count;
+        $rowIndex++
+    ) {
+
+        $row = $rows[$rowIndex]
+
+        if ($null -eq $row) {
             continue
         }
+
+
+        $avgRaw = Get-ScalarValue `
+            -Value $row.avg_ts `
+            -Field "avg_ts" `
+            -RowIndex $rowIndex
+
+        if ($null -eq $avgRaw) {
+            continue
+        }
+
+
+        $stdRaw = Get-ScalarValue `
+            -Value $row.stddev_ts `
+            -Field "stddev_ts" `
+            -RowIndex $rowIndex
+
+        $promptRaw = Get-ScalarValue `
+            -Value $row.n_prompt `
+            -Field "n_prompt" `
+            -RowIndex $rowIndex
+
+        $genRaw = Get-ScalarValue `
+            -Value $row.n_gen `
+            -Field "n_gen" `
+            -RowIndex $rowIndex
+
+        $batchRaw = Get-ScalarValue `
+            -Value $row.n_batch `
+            -Field "n_batch" `
+            -RowIndex $rowIndex
+
+        $ubatchRaw = Get-ScalarValue `
+            -Value $row.n_ubatch `
+            -Field "n_ubatch" `
+            -RowIndex $rowIndex
+
+        $threadsRaw = Get-ScalarValue `
+            -Value $row.n_threads `
+            -Field "n_threads" `
+            -RowIndex $rowIndex
+
+        $gpuLayersRaw = Get-ScalarValue `
+            -Value $row.n_gpu_layers `
+            -Field "n_gpu_layers" `
+            -RowIndex $rowIndex
+
+        $cpuMoeRaw = Get-ScalarValue `
+            -Value $row.n_cpu_moe `
+            -Field "n_cpu_moe" `
+            -RowIndex $rowIndex
+
 
         $nPrompt = 0
         $nGen = 0
 
-        if ($null -ne $row.n_prompt) {
-            $nPrompt = [int64]$row.n_prompt
+        if ($null -ne $promptRaw) {
+            $nPrompt = [int64]$promptRaw
         }
 
-        if ($null -ne $row.n_gen) {
-            $nGen = [int64]$row.n_gen
+        if ($null -ne $genRaw) {
+            $nGen = [int64]$genRaw
         }
+
 
         $kind = "unknown"
 
@@ -367,30 +499,43 @@ function Parse-BenchJson {
             $kind = "pg"
         }
 
+
+        $stdValue = $null
+
+        if ($null -ne $stdRaw) {
+
+            $stdValue = [math]::Round(
+                [double]$stdRaw,
+                4
+            )
+        }
+
+
         $measurement = [pscustomobject]@{
+
+            row_index      = $rowIndex
+
             kind           = $kind
 
             n_prompt       = $nPrompt
             n_gen          = $nGen
 
             avg_ts         = [math]::Round(
-                [double]$row.avg_ts,
+                [double]$avgRaw,
                 4
             )
 
-            stddev_ts      = [math]::Round(
-                [double]$row.stddev_ts,
-                4
-            )
+            stddev_ts      = $stdValue
 
             avg_ns         = $row.avg_ns
             stddev_ns      = $row.stddev_ns
 
-            n_batch        = $row.n_batch
-            n_ubatch       = $row.n_ubatch
-            n_threads      = $row.n_threads
-            n_gpu_layers   = $row.n_gpu_layers
-            n_cpu_moe      = $row.n_cpu_moe
+            n_batch        = $batchRaw
+            n_ubatch       = $ubatchRaw
+            n_threads      = $threadsRaw
+
+            n_gpu_layers   = $gpuLayersRaw
+            n_cpu_moe      = $cpuMoeRaw
 
             cpu_mask       = $row.cpu_mask
             cpu_strict     = $row.cpu_strict
@@ -400,11 +545,16 @@ function Parse-BenchJson {
             type_v         = $row.type_v
 
             flash_attn     = $row.flash_attn
+
             no_kv_offload  = $row.no_kv_offload
             no_op_offload  = $row.no_op_offload
+            no_host        = $row.no_host
+
+            split_mode     = $row.split_mode
+            main_gpu       = $row.main_gpu
+            devices        = $row.devices
 
             backends       = $row.backends
-            devices        = $row.devices
 
             build_commit   = $row.build_commit
             build_number   = $row.build_number
@@ -412,24 +562,31 @@ function Parse-BenchJson {
             cpu_info       = $row.cpu_info
             gpu_info       = $row.gpu_info
 
+            model_filename = $row.model_filename
             model_type     = $row.model_type
+
             model_size     = $row.model_size
             model_n_params = $row.model_n_params
+
+            test_time      = $row.test_time
 
             samples_ts     = @($row.samples_ts)
             samples_ns     = @($row.samples_ns)
         }
 
+
         $measurements += $measurement
     }
+
 
     if ($measurements.Count -eq 0) {
 
         throw (
-            "llama-bench completed, but no rows with " +
-            "avg_ts were found."
+            "llama-bench completed, but no rows containing " +
+            "avg_ts could be parsed."
         )
     }
+
 
     return $measurements
 }
@@ -446,7 +603,9 @@ function Parse-MemoryLog {
         [string]$Path
     )
 
+
     $summary = [ordered]@{
+
         initial_gpu_free_mib = $null
 
         full_gpu_offload     = $null
@@ -456,22 +615,34 @@ function Parse-MemoryLog {
         cpu_mapped_model_mib = $null
         gpu_model_mib        = $null
 
+
+        # Maximum values across every context initialization.
+        # These preserve the convenient old summary interface.
         gpu_kv_mib           = $null
         gpu_recurrent_mib    = $null
-
         gpu_compute_mib      = $null
         host_compute_mib     = $null
+
+
+        # Full per-test allocation history.
+        snapshot_count       = 0
+        context_snapshots    = @()
+
 
         pinned_memory_failure = $false
         allocation_failure    = $false
         gpu_fallback           = $false
 
-        raw_lines              = @()
+        summary_mode          = "max_across_contexts"
+
+        raw_lines             = @()
     }
+
 
     if (-not (Test-Path $Path)) {
         return [pscustomobject]$summary
     }
+
 
     $interesting = @(
         Get-Content $Path |
@@ -482,21 +653,35 @@ function Parse-MemoryLog {
         }
     )
 
+
     $summary.raw_lines = $interesting
 
+
+    $snapshots = @()
+    $current = $null
+
+
     foreach ($line in $interesting) {
+
+
+        # ----------------------------------------------------
+        # GLOBAL MODEL / DEVICE DATA
+        # ----------------------------------------------------
 
         if (
             $line -match
             '(\d+(?:\.\d+)?)\s+MiB free'
         ) {
+
             $summary.initial_gpu_free_mib = [double]$Matches[1]
         }
+
 
         if (
             $line -match
             'offloaded\s+(\d+)/(\d+)\s+layers to GPU'
         ) {
+
             $summary.offloaded_layers = [int]$Matches[1]
             $summary.total_layers = [int]$Matches[2]
 
@@ -506,67 +691,241 @@ function Parse-MemoryLog {
             )
         }
 
+
         if (
             $line -match
             'CPU_Mapped model buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
+
             $summary.cpu_mapped_model_mib = [double]$Matches[1]
         }
+
 
         if (
             $line -match
             'Vulkan0 model buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
+
             $summary.gpu_model_mib = [double]$Matches[1]
         }
+
+
+        # ----------------------------------------------------
+        # CONTEXT SNAPSHOT
+        #
+        # In this llama.cpp build every PP/TG configuration
+        # creates a fresh context. The Vulkan KV allocation is
+        # a reliable start marker for that context.
+        # ----------------------------------------------------
 
         if (
             $line -match
             'Vulkan0 KV buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
-            $summary.gpu_kv_mib = [double]$Matches[1]
+
+            if ($null -ne $current) {
+
+                $snapshots += [pscustomobject]$current
+            }
+
+
+            $current = [ordered]@{
+
+                index             = $snapshots.Count
+
+                gpu_kv_mib        = [double]$Matches[1]
+
+                gpu_recurrent_mib = $null
+
+                gpu_compute_mib   = $null
+
+                host_compute_mib  = $null
+            }
+
+            continue
         }
 
+
         if (
+            $null -ne $current -and
             $line -match
             'Vulkan0 RS buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
-            $summary.gpu_recurrent_mib = [double]$Matches[1]
+
+            $current.gpu_recurrent_mib = [double]$Matches[1]
+
+            continue
         }
 
-        if (
-            $line -match
-            'Vulkan0 compute buffer size\s*(?:is|=|of)?\s*([\d.]+)\s+MiB'
-        ) {
-            $summary.gpu_compute_mib = [double]$Matches[1]
-        }
+
+        # Only sched_reserve lines are allocation events.
+        # ~llama_context destructor lines repeat the values and
+        # are intentionally ignored.
 
         if (
+            $null -ne $current -and
             $line -match
-            'Vulkan_Host compute buffer size\s*(?:is|=|of)?\s*([\d.]+)\s+MiB'
+            '^sched_reserve:\s+Vulkan0 compute buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
-            $summary.host_compute_mib = [double]$Matches[1]
+
+            $current.gpu_compute_mib = [double]$Matches[1]
+
+            continue
         }
+
+
+        if (
+            $null -ne $current -and
+            $line -match
+            '^sched_reserve:\s+Vulkan_Host compute buffer size\s*=\s*([\d.]+)\s+MiB'
+        ) {
+
+            $current.host_compute_mib = [double]$Matches[1]
+
+            $snapshots += [pscustomobject]$current
+
+            $current = $null
+
+            continue
+        }
+
+
+        # ----------------------------------------------------
+        # FAILURE / FALLBACK FLAGS
+        # ----------------------------------------------------
 
         if (
             $line -match
             'Failed to allocate pinned memory'
         ) {
+
             $summary.pinned_memory_failure = $true
         }
+
 
         if (
             $line -match
             'OutOfDeviceMemory|allocation failed'
         ) {
+
             $summary.allocation_failure = $true
         }
     }
+
+
+    if ($null -ne $current) {
+
+        $snapshots += [pscustomobject]$current
+    }
+
+
+    for (
+        $i = 0;
+        $i -lt $snapshots.Count;
+        $i++
+    ) {
+
+        $snapshots[$i].index = $i
+    }
+
+
+    $summary.context_snapshots = @($snapshots)
+    $summary.snapshot_count = $snapshots.Count
+
+
+    # --------------------------------------------------------
+    # MAXIMUM SUMMARY VALUES
+    # --------------------------------------------------------
+
+    if ($snapshots.Count -gt 0) {
+
+
+        $kvValues = @(
+            $snapshots |
+            Where-Object {
+                $null -ne $_.gpu_kv_mib
+            } |
+            ForEach-Object {
+                [double]$_.gpu_kv_mib
+            }
+        )
+
+
+        $rsValues = @(
+            $snapshots |
+            Where-Object {
+                $null -ne $_.gpu_recurrent_mib
+            } |
+            ForEach-Object {
+                [double]$_.gpu_recurrent_mib
+            }
+        )
+
+
+        $gpuComputeValues = @(
+            $snapshots |
+            Where-Object {
+                $null -ne $_.gpu_compute_mib
+            } |
+            ForEach-Object {
+                [double]$_.gpu_compute_mib
+            }
+        )
+
+
+        $hostComputeValues = @(
+            $snapshots |
+            Where-Object {
+                $null -ne $_.host_compute_mib
+            } |
+            ForEach-Object {
+                [double]$_.host_compute_mib
+            }
+        )
+
+
+        if ($kvValues.Count -gt 0) {
+
+            $summary.gpu_kv_mib = (
+                $kvValues |
+                Measure-Object -Maximum
+            ).Maximum
+        }
+
+
+        if ($rsValues.Count -gt 0) {
+
+            $summary.gpu_recurrent_mib = (
+                $rsValues |
+                Measure-Object -Maximum
+            ).Maximum
+        }
+
+
+        if ($gpuComputeValues.Count -gt 0) {
+
+            $summary.gpu_compute_mib = (
+                $gpuComputeValues |
+                Measure-Object -Maximum
+            ).Maximum
+        }
+
+
+        if ($hostComputeValues.Count -gt 0) {
+
+            $summary.host_compute_mib = (
+                $hostComputeValues |
+                Measure-Object -Maximum
+            ).Maximum
+        }
+    }
+
 
     $summary.gpu_fallback = (
         $summary.pinned_memory_failure -or
         $summary.allocation_failure
     )
+
 
     return [pscustomobject]$summary
 }
@@ -978,8 +1337,36 @@ function Start-Benchmark {
         $runDirectory `
         "worker-err.log"
 
+    $workerHost = $null
+
+    $workerCandidates = @(
+        (Join-Path $PSHOME "pwsh.exe"),
+        (Join-Path $PSHOME "powershell.exe")
+    )
+
+    foreach ($candidate in $workerCandidates) {
+
+        if (Test-Path $candidate) {
+
+            $workerHost = $candidate
+            break
+        }
+    }
+
+    if (-not $workerHost) {
+
+        $workerHost = (
+            Get-Process -Id $PID
+        ).Path
+    }
+
+    if (-not $workerHost) {
+        throw "Could not resolve PowerShell executable for benchmark worker."
+    }
+
+
     $process = Start-Process `
-        -FilePath "powershell.exe" `
+        -FilePath $workerHost `
         -ArgumentList @(
             "-NoProfile"
             "-ExecutionPolicy"
@@ -1632,4 +2019,5 @@ switch ($Command.ToLowerInvariant()) {
         exit 1
     }
 }
+
 
