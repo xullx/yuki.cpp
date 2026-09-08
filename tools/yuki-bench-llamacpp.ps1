@@ -907,7 +907,16 @@ function Get-SweepMetadata {
             $true
 
         shared_model_load =
-            $true
+            $null
+
+        model_load_reuse_state =
+            "pending"
+
+        model_load_count =
+            0
+
+        model_load_reuse_basis =
+            "bench-stderr.log model-load placement events"
 
         measurement_order =
             @()
@@ -2210,11 +2219,500 @@ function Link-MemorySnapshotsToMeasurements {
 }
 
 
+
+# ============================================================
+# MODEL PLACEMENT PARSER / LINKER
+# ============================================================
+
+function Parse-ModelPlacementLog {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $snapshots = @()
+    $current = $null
+
+    function New-PlacementSnapshot {
+
+        param(
+            [int]$Index,
+            [int]$OffloadedLayers,
+            [int]$TotalLayers
+        )
+
+        return [ordered]@{
+
+            placement_id =
+                "model-placement-" +
+                ($Index + 1).ToString("D4")
+
+            index =
+                $Index
+
+            placement_condition_id =
+                $null
+
+            linkage_state =
+                "unlinked"
+
+            resolved_n_gpu_layers =
+                $null
+
+            resolved_n_cpu_moe =
+                $null
+
+            measurement_ids =
+                @()
+
+            measurement_order_indices =
+                @()
+
+            offloaded_layers =
+                $OffloadedLayers
+
+            total_layers =
+                $TotalLayers
+
+            full_gpu_offload =
+                ($OffloadedLayers -eq $TotalLayers)
+
+            partial_offload =
+                (
+                    $OffloadedLayers -gt 0 -and
+                    $OffloadedLayers -lt $TotalLayers
+                )
+
+            cpu_mapped_model_mib =
+                $null
+
+            gpu_model_mib =
+                $null
+
+            offload_value_check =
+                "not_checked"
+        }
+    }
+
+    if (Test-Path $Path) {
+
+        foreach ($line in @(Get-Content $Path)) {
+
+            if (
+                $line -match
+                    'offloaded\s+(\d+)/(\d+)\s+layers to GPU'
+            ) {
+
+                if ($null -ne $current) {
+                    $snapshots += [pscustomobject]$current
+                }
+
+                $current =
+                    New-PlacementSnapshot `
+                        -Index $snapshots.Count `
+                        -OffloadedLayers ([int]$Matches[1]) `
+                        -TotalLayers ([int]$Matches[2])
+
+                continue
+            }
+
+            if (
+                $null -ne $current -and
+                $line -match
+                    'CPU_Mapped model buffer size\s*=\s*([\d.]+)\s+MiB'
+            ) {
+
+                $current.cpu_mapped_model_mib =
+                    [double]$Matches[1]
+
+                continue
+            }
+
+            if (
+                $null -ne $current -and
+                $line -match
+                    'Vulkan\d+ model buffer size\s*=\s*([\d.]+)\s+MiB'
+            ) {
+
+                $current.gpu_model_mib =
+                    [double]$Matches[1]
+
+                continue
+            }
+        }
+    }
+
+    if ($null -ne $current) {
+        $snapshots += [pscustomobject]$current
+    }
+
+    return [pscustomobject][ordered]@{
+
+        state =
+            if ($snapshots.Count -gt 0) {
+                "parsed"
+            }
+            else {
+                "not_observed"
+            }
+
+        snapshot_count =
+            $snapshots.Count
+
+        snapshots =
+            @($snapshots)
+
+        linkage = [ordered]@{
+
+            state =
+                "not_attempted"
+
+            method =
+                "placement_condition_order_with_offload_value_check"
+
+            condition_count =
+                0
+
+            snapshot_count =
+                $snapshots.Count
+
+            linked_snapshot_count =
+                0
+
+            unmatched_conditions =
+                0
+
+            unmatched_snapshots =
+                $snapshots.Count
+
+            value_mismatch_count =
+                0
+
+            conditions =
+                @()
+
+            note = (
+                "Model-load placement events are condition-level evidence. " +
+                "They are linked to all measurements sharing the same resolved " +
+                "GPU-layer/CPU-MoE placement rather than collapsed into a run-level last value."
+            )
+        }
+    }
+}
+
+
+function Link-ModelPlacementsToMeasurements {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $ModelPlacement,
+
+        [Parameter(Mandatory = $true)]
+        [array]$Measurements
+    )
+
+    $conditions = @()
+    $lastKey = $null
+    $condition = $null
+
+    foreach (
+        $measurement in
+        @($Measurements | Sort-Object order_index)
+    ) {
+
+        $gpuLayers =
+            $measurement.n_gpu_layers
+
+        $cpuMoe =
+            $measurement.n_cpu_moe
+
+        $key =
+            "n_gpu_layers=$gpuLayers|n_cpu_moe=$cpuMoe"
+
+        # A placement condition is a contiguous measurement segment.
+        # This preserves repeated placement values that are reloaded later
+        # in a randomized or otherwise non-contiguous native sweep.
+        if (
+            $null -eq $condition -or
+            $key -ne $lastKey
+        ) {
+
+            $conditionIndex =
+                $conditions.Count
+
+            $conditionId =
+                "placement-condition-" +
+                ($conditionIndex + 1).ToString("D4")
+
+            $condition =
+                [pscustomobject][ordered]@{
+
+                    condition_id =
+                        $conditionId
+
+                    order_index =
+                        $conditionIndex
+
+                    key =
+                        $key
+
+                    resolved_n_gpu_layers =
+                        $gpuLayers
+
+                    resolved_n_cpu_moe =
+                        $cpuMoe
+
+                    measurement_ids =
+                        @()
+
+                    measurement_order_indices =
+                        @()
+
+                    model_placement_id =
+                        $null
+                }
+
+            $conditions +=
+                $condition
+
+            $lastKey =
+                $key
+        }
+
+        $condition.measurement_ids =
+            @($condition.measurement_ids) +
+            @($measurement.measurement_id)
+
+        $condition.measurement_order_indices =
+            @($condition.measurement_order_indices) +
+            @($measurement.order_index)
+
+        Set-ObjectProperty `
+            $measurement `
+            "placement_condition_id" `
+            $condition.condition_id
+
+        Set-ObjectProperty `
+            $measurement `
+            "model_placement_id" `
+            $null
+    }
+
+    $snapshots =
+        @($ModelPlacement.snapshots)
+
+    $linkCount =
+        [math]::Min(
+            $conditions.Count,
+            $snapshots.Count
+        )
+
+    $valueMismatchCount =
+        0
+
+    for (
+        $i = 0;
+        $i -lt $linkCount;
+        $i++
+    ) {
+
+        $condition =
+            $conditions[$i]
+
+        $snapshot =
+            $snapshots[$i]
+
+        Set-ObjectProperty `
+            $snapshot `
+            "placement_condition_id" `
+            $condition.condition_id
+
+        Set-ObjectProperty `
+            $snapshot `
+            "resolved_n_gpu_layers" `
+            $condition.resolved_n_gpu_layers
+
+        Set-ObjectProperty `
+            $snapshot `
+            "resolved_n_cpu_moe" `
+            $condition.resolved_n_cpu_moe
+
+        Set-ObjectProperty `
+            $snapshot `
+            "measurement_ids" `
+            @($condition.measurement_ids)
+
+        Set-ObjectProperty `
+            $snapshot `
+            "measurement_order_indices" `
+            @($condition.measurement_order_indices)
+
+        $valueCheck =
+            "not_checked"
+
+        $resolvedGpuLayers =
+            $condition.resolved_n_gpu_layers
+
+        if (
+            $null -ne $resolvedGpuLayers -and
+            $null -ne $snapshot.total_layers
+        ) {
+
+            $numericGpuLayers =
+                0
+
+            if (
+                [int]::TryParse(
+                    [string]$resolvedGpuLayers,
+                    [ref]$numericGpuLayers
+                ) -and
+                $numericGpuLayers -ge 0
+            ) {
+
+                $expectedOffloaded =
+                    [math]::Min(
+                        $numericGpuLayers,
+                        [int]$snapshot.total_layers
+                    )
+
+                if (
+                    $expectedOffloaded -eq
+                    [int]$snapshot.offloaded_layers
+                ) {
+                    $valueCheck =
+                        "match"
+                }
+                else {
+                    $valueCheck =
+                        "mismatch"
+
+                    $valueMismatchCount++
+                }
+            }
+        }
+
+        Set-ObjectProperty `
+            $snapshot `
+            "offload_value_check" `
+            $valueCheck
+
+        $linkageState =
+            if ($valueCheck -eq "mismatch") {
+                "linked_by_order_value_mismatch"
+            }
+            else {
+                "linked_by_placement_condition_order"
+            }
+
+        Set-ObjectProperty `
+            $snapshot `
+            "linkage_state" `
+            $linkageState
+
+        $condition.model_placement_id =
+            $snapshot.placement_id
+
+        foreach ($measurement in $Measurements) {
+
+            if (
+                $measurement.placement_condition_id -eq
+                $condition.condition_id
+            ) {
+
+                Set-ObjectProperty `
+                    $measurement `
+                    "model_placement_id" `
+                    $snapshot.placement_id
+            }
+        }
+    }
+
+    for (
+        $i = $linkCount;
+        $i -lt $snapshots.Count;
+        $i++
+    ) {
+
+        Set-ObjectProperty `
+            $snapshots[$i] `
+            "linkage_state" `
+            "unmatched_snapshot"
+    }
+
+    $ModelPlacement.snapshots =
+        @($snapshots)
+
+    $ModelPlacement.linkage =
+        [pscustomobject][ordered]@{
+
+            state =
+                if (
+                    $conditions.Count -eq $snapshots.Count -and
+                    $conditions.Count -gt 0 -and
+                    $valueMismatchCount -eq 0
+                ) {
+                    "complete"
+                }
+                elseif (
+                    $conditions.Count -eq 0 -and
+                    $snapshots.Count -eq 0
+                ) {
+                    "not_applicable"
+                }
+                else {
+                    "partial"
+                }
+
+            method =
+                "placement_condition_order_with_offload_value_check"
+
+            condition_count =
+                $conditions.Count
+
+            snapshot_count =
+                $snapshots.Count
+
+            linked_snapshot_count =
+                $linkCount
+
+            unmatched_conditions =
+                [math]::Max(
+                    0,
+                    $conditions.Count -
+                    $snapshots.Count
+                )
+
+            unmatched_snapshots =
+                [math]::Max(
+                    0,
+                    $snapshots.Count -
+                    $conditions.Count
+                )
+
+            value_mismatch_count =
+                $valueMismatchCount
+
+            conditions =
+                @($conditions)
+
+            note = (
+                "Each model-load placement snapshot is linked to a resolved " +
+                "placement condition and therefore to every PP/TG measurement " +
+                "that used that model placement."
+            )
+        }
+
+    return $ModelPlacement
+}
+
+
 function Get-ExecutionAssessment {
 
     param(
         $Run,
         $Memory,
+        $ModelPlacement,
         [string]$ParserState
     )
 
@@ -2250,23 +2748,114 @@ function Get-ExecutionAssessment {
     $placementState =
         "unknown"
 
-    if ($null -ne $Memory.full_gpu_offload) {
+    $placementSnapshots =
+        @()
+
+    if (
+        $null -ne $ModelPlacement -and
+        $ModelPlacement.PSObject.Properties["snapshots"]
+    ) {
+        $placementSnapshots =
+            @($ModelPlacement.snapshots)
+    }
+
+    $placementStates =
+        @()
+
+    foreach ($snapshot in $placementSnapshots) {
+
+        $state =
+            "non_full_gpu_offload"
+
+        if ($snapshot.full_gpu_offload) {
+            $state =
+                "full_gpu_offload"
+        }
+        elseif (
+            $null -ne $snapshot.offloaded_layers -and
+            [int]$snapshot.offloaded_layers -eq 0
+        ) {
+            $state =
+                "cpu_only"
+        }
+        elseif ($snapshot.partial_offload) {
+            $state =
+                "partial_gpu_offload"
+        }
+
+        $placementStates +=
+            $state
+    }
+
+    $uniquePlacementStates =
+        @($placementStates | Select-Object -Unique)
+
+    if ($uniquePlacementStates.Count -eq 1) {
+        $placementState =
+            $uniquePlacementStates[0]
+    }
+    elseif ($uniquePlacementStates.Count -gt 1) {
+        $placementState =
+            "mixed_model_placement"
+    }
+    elseif ($null -ne $Memory.full_gpu_offload) {
 
         if ($Memory.full_gpu_offload) {
-            $placementState = "full_gpu_offload"
+            $placementState =
+                "full_gpu_offload"
         }
         elseif (
             $null -ne $Memory.offloaded_layers -and
             [int]$Memory.offloaded_layers -eq 0
         ) {
-            $placementState = "cpu_only"
+            $placementState =
+                "cpu_only"
         }
         elseif ($Memory.partial_offload) {
-            $placementState = "partial_gpu_offload"
+            $placementState =
+                "partial_gpu_offload"
         }
         else {
-            $placementState = "non_full_gpu_offload"
+            $placementState =
+                "non_full_gpu_offload"
         }
+    }
+
+    $allFullGpuOffload =
+        $null
+
+    $anyPartialOffload =
+        $null
+
+    if ($placementSnapshots.Count -gt 0) {
+
+        $allFullGpuOffload =
+            (@(
+                $placementSnapshots |
+                Where-Object {
+                    -not $_.full_gpu_offload
+                }
+            ).Count -eq 0)
+
+        $anyPartialOffload =
+            (@(
+                $placementSnapshots |
+                Where-Object {
+                    $_.partial_offload
+                }
+            ).Count -gt 0)
+    }
+
+    $placementLinkageState =
+        "not_available"
+
+    if (
+        $null -ne $ModelPlacement -and
+        $ModelPlacement.PSObject.Properties["linkage"] -and
+        $ModelPlacement.linkage
+    ) {
+        $placementLinkageState =
+            [string]$ModelPlacement.linkage.state
     }
 
     return [pscustomobject][ordered]@{
@@ -2289,23 +2878,28 @@ function Get-ExecutionAssessment {
         placement_state =
             $placementState
 
-        full_gpu_offload =
-            $Memory.full_gpu_offload
+        placement_snapshot_count =
+            $placementSnapshots.Count
 
-        partial_offload =
-            $Memory.partial_offload
+        placement_linkage_state =
+            $placementLinkageState
+
+        all_full_gpu_offload =
+            $allFullGpuOffload
+
+        any_partial_offload =
+            $anyPartialOffload
 
         interpretation = (
             "Intentional partial placement is not automatically a fallback. " +
+            "For native multi-value placement sweeps, placement_state is derived " +
+            "from condition-linked model-load snapshots rather than the final load event. " +
             "Winner eligibility requires normal engine completion, successful parsing, " +
             "and no detected allocation/pinned-memory fallback."
         )
     }
 }
 
-# ============================================================
-# RESULT UPDATE
-# ============================================================
 
 function Update-RunFromFiles {
 
@@ -2407,11 +3001,19 @@ function Update-RunFromFiles {
     $memory =
         Parse-MemoryLog $benchErr
 
+    $modelPlacement =
+        Parse-ModelPlacementLog $benchErr
+
     if ($parserState -eq "complete") {
 
         $memory =
             Link-MemorySnapshotsToMeasurements `
                 -Memory $memory `
+                -Measurements $measurements
+
+        $modelPlacement =
+            Link-ModelPlacementsToMeasurements `
+                -ModelPlacement $modelPlacement `
                 -Measurements $measurements
     }
 
@@ -2434,6 +3036,11 @@ function Update-RunFromFiles {
         $run.result `
         "memory" `
         $memory
+
+    Set-ObjectProperty `
+        $run.result `
+        "model_placement" `
+        $modelPlacement
 
     Set-ObjectProperty `
         $run.result `
@@ -2516,6 +3123,9 @@ function Update-RunFromFiles {
 
                 memory =
                     $memory
+
+                model_placement =
+                    $modelPlacement
             }
     }
 
@@ -2554,6 +3164,52 @@ function Update-RunFromFiles {
                 $run.execution.process_reuse `
                 "measurement_order_state" `
                 $measurementOrderState
+
+            $modelLoadCount =
+                @($modelPlacement.snapshots).Count
+
+            $sharedModelLoad =
+                $null
+
+            $modelLoadReuseState =
+                "not_observed"
+
+            if ($modelLoadCount -eq 1) {
+
+                $sharedModelLoad =
+                    $true
+
+                $modelLoadReuseState =
+                    "single_observed_model_load"
+            }
+            elseif ($modelLoadCount -gt 1) {
+
+                $sharedModelLoad =
+                    $false
+
+                $modelLoadReuseState =
+                    "multiple_observed_model_loads"
+            }
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "shared_model_load" `
+                $sharedModelLoad
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "model_load_reuse_state" `
+                $modelLoadReuseState
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "model_load_count" `
+                $modelLoadCount
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "model_load_reuse_basis" `
+                "bench-stderr.log model-load placement events"
         }
 
         Set-ObjectProperty `
@@ -2590,6 +3246,7 @@ function Update-RunFromFiles {
         Get-ExecutionAssessment `
             -Run $run `
             -Memory $memory `
+            -ModelPlacement $modelPlacement `
             -ParserState $parserState
 
     Set-ObjectProperty `
@@ -2640,6 +3297,9 @@ function Update-RunFromFiles {
 
         memory =
             $memory
+
+        model_placement =
+            $modelPlacement
 
         execution_assessment =
             $executionAssessment
@@ -4172,16 +4832,12 @@ function Show-Run {
     ) {
 
         Write-Host ""
-        Write-Host "=== MEMORY ===" `
+        Write-Host "=== CONTEXT MEMORY ===" `
             -ForegroundColor Cyan
 
         $run.result.memory |
             Select-Object `
                 initial_gpu_free_mib,
-                full_gpu_offload,
-                offloaded_layers,
-                total_layers,
-                gpu_model_mib,
                 gpu_kv_mib,
                 host_kv_mib,
                 gpu_recurrent_mib,
@@ -4189,8 +4845,7 @@ function Show-Run {
                 host_compute_mib,
                 pinned_memory_failure,
                 allocation_failure,
-                gpu_fallback,
-                partial_offload |
+                gpu_fallback |
             Format-List
 
         if (
@@ -4200,6 +4855,64 @@ function Show-Run {
             Write-Host "Memory linkage:"
 
             $run.result.memory.linkage |
+                Format-List
+        }
+    }
+
+    if (
+        $run.result -and
+        $run.result.PSObject.Properties[
+            "model_placement"
+        ] -and
+        $run.result.model_placement
+    ) {
+
+        Write-Host ""
+        Write-Host "=== MODEL PLACEMENT ===" `
+            -ForegroundColor Cyan
+
+        $placementSnapshots =
+            @($run.result.model_placement.snapshots)
+
+        if ($placementSnapshots.Count -gt 0) {
+
+            $placementSnapshots |
+                Select-Object `
+                    placement_id,
+                    placement_condition_id,
+                    linkage_state,
+                    resolved_n_gpu_layers,
+                    resolved_n_cpu_moe,
+                    offloaded_layers,
+                    total_layers,
+                    cpu_mapped_model_mib,
+                    gpu_model_mib,
+                    offload_value_check |
+                Format-Table -AutoSize
+        }
+        else {
+            Write-Host "No model-placement snapshots."
+        }
+
+        if (
+            $run.result.model_placement.PSObject.Properties[
+                "linkage"
+            ]
+        ) {
+
+            Write-Host "Model placement linkage:"
+
+            $run.result.model_placement.linkage |
+                Select-Object `
+                    state,
+                    method,
+                    condition_count,
+                    snapshot_count,
+                    linked_snapshot_count,
+                    unmatched_conditions,
+                    unmatched_snapshots,
+                    value_mismatch_count,
+                    note |
                 Format-List
         }
     }
