@@ -1,0 +1,340 @@
+{
+  "schema": "yuki-benchmark-architecture-v1",
+  "version": 1,
+  "purpose": [
+    "Reproducible local AI backend benchmarking",
+    "Cross-backend performance comparison",
+    "Hardware and software provenance",
+    "Experiment coverage tracking",
+    "Preservation of raw benchmark evidence"
+  ],
+  "principles": {
+    "canonical_format": "json",
+    "raw_artifacts": [
+      "json",
+      "jsonl",
+      "log",
+      "txt",
+      "dmp"
+    ],
+    "database_index": {
+      "enabled_now": false,
+      "future_option": "sqlite",
+      "authoritative": false,
+      "regenerable_from_json": true
+    },
+    "immutable_raw_results": true,
+    "experiment_is_primary_unit": true,
+    "separate_requested_resolved_observed": true,
+    "separate_quality_results": true,
+    "preserve_backend_specific_data": true,
+    "preserve_raw_backend_output": true,
+    "do_not_assume_backend_result_applies_to_hardware": true
+  },
+  "entities": {
+    "machine": {
+      "purpose": "Physical hardware identity",
+      "mutability": "rare",
+      "identity_rule": "persistent machine id"
+    },
+    "environment": {
+      "purpose": "Mutable operating system, driver, runtime, and configuration state",
+      "mutability": "snapshot"
+    },
+    "host_session": {
+      "purpose": "One operating-system boot/session",
+      "mutability": "append/finalize",
+      "required_fields": [
+        "session_id",
+        "machine_ref",
+        "boot_time"
+      ]
+    },
+    "backend": {
+      "purpose": "Exact inference backend build and its capabilities",
+      "mutability": "immutable per build identity",
+      "contains": [
+        "build identity",
+        "binary hashes",
+        "backend libraries",
+        "compiler/build information",
+        "device capabilities",
+        "CLI capability snapshots",
+        "parameter registry",
+        "interaction registry"
+      ]
+    },
+    "model": {
+      "purpose": "Conceptual model identity independent of representation",
+      "mutability": "rare"
+    },
+    "model_artifact": {
+      "purpose": "Exact model file or backend-native representation",
+      "identity_rule": "content hash",
+      "contains": [
+        "model reference",
+        "format",
+        "quantization",
+        "file hash",
+        "file size",
+        "architecture metadata"
+      ]
+    },
+    "suite": {
+      "purpose": "Standardized workload definitions for cross-backend comparison",
+      "mutability": "versioned"
+    },
+    "experiment": {
+      "purpose": "Scientific question or parameter investigation",
+      "contains": [
+        "purpose",
+        "hypothesis",
+        "invariants",
+        "variables",
+        "interaction assumptions",
+        "coverage declaration",
+        "run references",
+        "completion state"
+      ]
+    },
+    "run": {
+      "purpose": "One actual backend invocation or backend-native sweep",
+      "contains": [
+        "references",
+        "requested",
+        "resolved",
+        "observed",
+        "results",
+        "termination",
+        "evidence"
+      ]
+    }
+  },
+  "run_model": {
+    "references": [
+      "machine",
+      "environment",
+      "host_session",
+      "backend",
+      "model",
+      "model_artifact",
+      "suite",
+      "experiment"
+    ],
+    "requested": {
+      "meaning": "Exactly what the benchmark harness requested",
+      "interpretation_allowed": false
+    },
+    "resolved": {
+      "meaning": "What the backend actually selected or enabled",
+      "examples": [
+        "resolved device",
+        "resolved flash attention state",
+        "actual layer placement",
+        "actual KV placement",
+        "selected CPU backend",
+        "enabled fused operations"
+      ]
+    },
+    "observed": {
+      "meaning": "What happened during execution",
+      "categories": [
+        "memory",
+        "lightweight utilization",
+        "warnings",
+        "fallbacks",
+        "runtime behavior"
+      ],
+      "telemetry_policy": {
+        "required": false,
+        "default_complexity": "summary_only",
+        "raw_jsonl_allowed": true
+      }
+    },
+    "results": {
+      "performance": [
+        "prompt throughput",
+        "decode throughput",
+        "raw repetitions",
+        "mean",
+        "median",
+        "standard deviation",
+        "wall time"
+      ],
+      "memory": [
+        "model buffers",
+        "KV buffers",
+        "recurrent state",
+        "compute buffers",
+        "host buffers",
+        "allocation failures"
+      ],
+      "interactive": [
+        "model TTFT",
+        "visible TTFT",
+        "prompt evaluation rate",
+        "decode rate",
+        "total latency",
+        "cache behavior",
+        "concurrency"
+      ],
+      "quality": {
+        "separate_category": true,
+        "required": false
+      }
+    },
+    "termination": {
+      "independent_from_results": true,
+      "categories": [
+        "normal",
+        "engine_error",
+        "parser_error",
+        "harness_error",
+        "manual_cancel",
+        "process_crash",
+        "host_bugcheck",
+        "host_reboot",
+        "power_loss",
+        "host_hang",
+        "unknown_interruption"
+      ],
+      "preserve_root_cause_separately": true,
+      "evidence_confidence": [
+        "confirmed",
+        "probable",
+        "possible",
+        "unknown"
+      ]
+    },
+    "evidence": {
+      "inline_large_data": false,
+      "reference_files": [
+        "bench.json",
+        "stderr logs",
+        "stdout logs",
+        "status files",
+        "telemetry files",
+        "OS event extracts",
+        "crash dumps"
+      ]
+    }
+  },
+  "parameter_system": {
+    "registry_owner": "backend",
+    "capability_completeness": "Record every option exposed by the exact backend build",
+    "experimental_completeness": "Investigate every parameter materially relevant to the target workload",
+    "relevance_classes": [
+      "performance",
+      "quality",
+      "operational",
+      "diagnostic",
+      "not_applicable"
+    ],
+    "coverage_states": [
+      "not_tested",
+      "planned",
+      "partial",
+      "covered",
+      "exhausted",
+      "not_applicable",
+      "unsupported"
+    ],
+    "interaction_classes": [
+      "independent",
+      "weak",
+      "strong",
+      "conditional",
+      "unsupported_combination",
+      "not_applicable"
+    ],
+    "command_binding_model": "per-command",
+    "applicability_states": [
+      "applicable",
+      "conditional",
+      "not_applicable",
+      "deprecated",
+      "removed"
+    ],
+    "backend_parameter_families": [
+      "compute_placement",
+      "cpu_execution",
+      "gpu_kernel_execution",
+      "memory_and_kv",
+      "scheduling_and_batching",
+      "model_loading",
+      "context_and_rope",
+      "server_cache",
+      "speculative_decoding",
+      "sampling_and_generation",
+      "benchmark_workload",
+      "quality_and_chat",
+      "operational",
+      "diagnostic",
+      "multimodal"
+    ],
+    "raw_help_policy": "Raw CLI help snapshots are authoritative. Parsed option lines and semantic mappings are derived navigation/classification layers.",
+    "capability_review_model": {
+      "stages": [
+        "captured",
+        "reviewed",
+        "semantic_candidate",
+        "promoted",
+        "experimentally_covered"
+      ],
+      "rule": "Capability review completeness and experimental coverage must never be treated as the same state.",
+      "nonsemantic_classifications": [
+        "diagnostic",
+        "operational_model_source",
+        "operational_server",
+        "operational_preset",
+        "not_applicable_embedding",
+        "not_applicable_multimodal",
+        "deprecated",
+        "removed",
+        "parser_artifact"
+      ]
+    },
+    "semantic_promotion_policy": "A reviewed capability becomes a first-class semantic parameter only when it represents a meaningful configuration concept. Operational surface, parser artifacts, deprecated/removed options and out-of-scope capabilities remain explicitly classified without creating pointless experiments."
+  },
+  "experiment_model": {
+    "required_concepts": [
+      "purpose",
+      "variables",
+      "invariants",
+      "coverage",
+      "runs"
+    ],
+    "optional_concepts": [
+      "hypothesis",
+      "interaction_map",
+      "notes"
+    ],
+    "states": [
+      "planned",
+      "running",
+      "interrupted",
+      "complete",
+      "exhausted",
+      "superseded"
+    ],
+    "exhaustive_policy": "Do not benchmark the Cartesian product of all backend options. Catalog all meaningful parameters and exhaust relevant interactions."
+  },
+  "paths": {
+    "runtime_root": "C:\\Yuki\\benchmarks",
+    "machine_registry": "C:\\Yuki\\benchmarks\\registry\\machines",
+    "environment_registry": "C:\\Yuki\\benchmarks\\registry\\environments",
+    "host_session_registry": "C:\\Yuki\\benchmarks\\registry\\host-sessions",
+    "backend_registry": "C:\\Yuki\\benchmarks\\registry\\backends",
+    "model_registry": "C:\\Yuki\\benchmarks\\registry\\models",
+    "model_artifact_registry": "C:\\Yuki\\benchmarks\\registry\\model-artifacts",
+    "suite_registry": "C:\\Yuki\\benchmarks\\registry\\suites",
+    "experiments": "C:\\Yuki\\benchmarks\\experiments",
+    "runs": "C:\\Yuki\\benchmarks\\runs"
+  },
+  "migration": {
+    "legacy_system_profile": "C:\\Yuki\\benchmarks\\system-profile.json",
+    "existing_runs_preserved": true,
+    "automatic_migration_enabled": false,
+    "policy": "Existing benchmark data must remain untouched until the v1 architecture and migration rules are validated."
+  }
+}

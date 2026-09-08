@@ -5,6 +5,14 @@ param(
 
     [string]$Name = "manual",
 
+    # New post-architecture runs must belong to an explicit Experiment.
+    [string]$ExperimentId = "",
+
+    # Optional methodology workload profile. If omitted, the harness
+    # auto-detects the standard 2048+128 and decode-scaling profiles
+    # where possible; otherwise the run is recorded as "custom".
+    [string]$WorkloadId = "",
+
     [int]$PromptTokens = 0,
 
     # llama-bench accepts comma-separated values, e.g.:
@@ -12,12 +20,14 @@ param(
     #   "128,512,2048,8192"
     [string]$GenTokens = "0",
 
-    [int]$Repetitions = 3,
+    # methodology-llamacpp-v1 default.
+    [int]$Repetitions = 5,
 
     [int]$Batch = 4096,
 
     [int]$UBatch = 4096,
 
+    # llama-bench accepts comma-separated values for several knobs.
     [string]$Threads = "32",
 
     [string]$GpuLayers = "99",
@@ -78,6 +88,34 @@ $Script:Actions = `
 
 $Script:BrainPort = 8084
 
+$Script:BackendId = `
+    "llamacpp-6703d7894-bf685ba62a42"
+
+$Script:SuiteId = `
+    "suite-llamacpp-6703d7894-yuki-exhaustion-v1"
+
+$Script:MethodologyId = `
+    "methodology-llamacpp-v1"
+
+$Script:SuiteFile = Join-Path `
+    "$Script:BenchRoot\registry\suites\$Script:SuiteId" `
+    "suite.json"
+
+$Script:BackendFile = Join-Path `
+    "$Script:BenchRoot\registry\backends\$Script:BackendId" `
+    "backend.json"
+
+$Script:MethodologyFile = Join-Path `
+    "$Script:BenchRoot\experiments\exp-llamacpp-methodology-freeze-v1" `
+    "methodology.json"
+
+$Script:RunSchema = `
+    "yuki-llamacpp-benchmark-run-v3"
+
+$Script:StatusSchema = `
+    "yuki-llamacpp-benchmark-status-v2"
+
+# Kept only for historical compatibility/evidence.
 $Script:BackendProfileId = `
     "llamacpp-vulkan-rx6800"
 
@@ -100,25 +138,29 @@ function Show-Help {
     Write-Host ""
     Write-Host "  start"
     Write-Host "      Start a detached llama.cpp benchmark."
+    Write-Host "      New runs require -ExperimentId."
     Write-Host ""
     Write-Host "  status"
     Write-Host "      Show status for a run."
     Write-Host ""
     Write-Host "  show"
-    Write-Host "      Show parsed benchmark results and memory data."
+    Write-Host "      Show parsed benchmark results, identities and memory data."
     Write-Host ""
     Write-Host "  list"
     Write-Host "      List recent llama.cpp benchmark runs."
     Write-Host ""
     Write-Host "  repair"
     Write-Host "      Reparse an existing bench.json without rerunning."
+    Write-Host "      Legacy v2 runs remain repairable."
     Write-Host ""
     Write-Host "Examples:"
     Write-Host ""
     Write-Host '  & .\yuki-bench-llamacpp.ps1 start `'
+    Write-Host '      -ExperimentId "exp-..." `'
     Write-Host '      -Name "pp2048" `'
+    Write-Host '      -WorkloadId "synthetic-interactive-v1" `'
     Write-Host '      -PromptTokens 2048 `'
-    Write-Host '      -GenTokens "0" `'
+    Write-Host '      -GenTokens "128" `'
     Write-Host '      -Batch 2048 `'
     Write-Host '      -UBatch 2048'
     Write-Host ""
@@ -129,16 +171,24 @@ function Show-Help {
     Write-Host '  & .\yuki-bench-llamacpp.ps1 repair `'
     Write-Host '      -RunPath "C:\Yuki\benchmarks\runs\<run>"'
     Write-Host ""
-    Write-Host "Backend profile:"
-    Write-Host "  $Script:BackendProfileId"
+    Write-Host "Backend:"
+    Write-Host "  $Script:BackendId"
+    Write-Host ""
+    Write-Host "Suite:"
+    Write-Host "  $Script:SuiteId"
+    Write-Host ""
+    Write-Host "Methodology:"
+    Write-Host "  $Script:MethodologyId"
+    Write-Host ""
+    Write-Host "Post-architecture run schema:"
+    Write-Host "  $Script:RunSchema"
     Write-Host ""
     Write-Host "This harness is specifically for llama.cpp."
     Write-Host "============================================================"
 }
 
-
 # ============================================================
-# JSON HELPERS
+# JSON / OBJECT HELPERS
 # ============================================================
 
 function Write-JsonFile {
@@ -151,11 +201,35 @@ function Write-JsonFile {
         [string]$Path
     )
 
+    $parent = Split-Path $Path -Parent
+
+    if ($parent) {
+
+        New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $parent |
+            Out-Null
+    }
+
+    $temp = $Path + ".tmp"
+
     $Object |
-        ConvertTo-Json -Depth 30 |
+        ConvertTo-Json -Depth 100 |
         Set-Content `
-            -Path $Path `
+            -Path $temp `
             -Encoding UTF8
+
+    # Validate JSON before replacing the authoritative file.
+    $null = (
+        Get-Content $temp -Raw |
+        ConvertFrom-Json
+    )
+
+    Move-Item `
+        -Path $temp `
+        -Destination $Path `
+        -Force
 }
 
 
@@ -201,6 +275,614 @@ function Set-ObjectProperty {
             Add-Member `
                 -NotePropertyName $Name `
                 -NotePropertyValue $Value
+    }
+}
+
+
+function Get-Sha256 {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Cannot hash missing file: $Path"
+    }
+
+    return (
+        Get-FileHash `
+            -Path $Path `
+            -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+}
+
+
+function Test-MultiValueString {
+
+    param(
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    return (
+        ([string]$Value) -match ','
+    )
+}
+
+
+function Get-UniqueStringValues {
+
+    param(
+        $Value
+    )
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    return @(
+        ([string]$Value) `
+            -split ',' |
+        ForEach-Object {
+            $_.Trim()
+        } |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } |
+        Select-Object -Unique
+    )
+}
+
+
+# ============================================================
+# REPRODUCIBILITY CONTRACT
+# ============================================================
+
+function Get-BenchmarkContract {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RequestedExperimentId
+    )
+
+    if (
+        [string]::IsNullOrWhiteSpace(
+            $RequestedExperimentId
+        )
+    ) {
+        throw (
+            "start requires -ExperimentId. " +
+            "Create the Experiment record before launching a post-architecture run."
+        )
+    }
+
+    foreach (
+        $required in @(
+            $Script:SuiteFile,
+            $Script:BackendFile,
+            $Script:MethodologyFile,
+            $Script:Llama,
+            $Script:Model
+        )
+    ) {
+
+        if (-not (Test-Path $required)) {
+            throw "Required benchmark contract path missing: $required"
+        }
+    }
+
+    $suite = Read-JsonFile $Script:SuiteFile
+    $backend = Read-JsonFile $Script:BackendFile
+    $methodology = Read-JsonFile $Script:MethodologyFile
+
+    if ($suite.id -ne $Script:SuiteId) {
+        throw "Suite identity mismatch."
+    }
+
+    if (-not $suite.summary.manifest_complete) {
+        throw "Suite coverage manifest is not complete."
+    }
+
+    if ($backend.id -ne $Script:BackendId) {
+        throw "Backend registry identity mismatch."
+    }
+
+    if (
+        -not
+        $backend.parameter_registry.review.semantic_registry_structurally_complete
+    ) {
+        throw "Backend semantic registry is not structurally complete."
+    }
+
+    if ($methodology.id -ne $Script:MethodologyId) {
+        throw "Methodology identity mismatch."
+    }
+
+    if ($methodology.status -ne "frozen") {
+        throw "Methodology is not frozen."
+    }
+
+    $methodologyHash = Get-Sha256 $Script:MethodologyFile
+
+    if (
+        $suite.PSObject.Properties["methodology"] -and
+        $suite.methodology.sha256 -and
+        ([string]$suite.methodology.sha256).ToLowerInvariant() -ne
+            $methodologyHash
+    ) {
+        throw (
+            "Methodology hash differs from the suite binding. " +
+            "Do not run benchmarks until the methodology identity is reconciled."
+        )
+    }
+
+    $experimentFile = Join-Path `
+        "$Script:BenchRoot\experiments\$RequestedExperimentId" `
+        "experiment.json"
+
+    if (-not (Test-Path $experimentFile)) {
+        throw "Experiment record not found: $experimentFile"
+    }
+
+    $experiment = Read-JsonFile $experimentFile
+
+    if ($experiment.id -ne $RequestedExperimentId) {
+        throw "Experiment ID does not match its record."
+    }
+
+    if ($experiment.suite_ref -ne $suite.id) {
+        throw "Experiment belongs to a different benchmark suite."
+    }
+
+    if (
+        $experiment.PSObject.Properties["phase"] -and
+        [int]$experiment.phase -eq 0
+    ) {
+        throw (
+            "Phase-0 methodology experiment cannot own performance runs. " +
+            "Create a Phase-1 or later Experiment."
+        )
+    }
+
+    $experimentMethodologyId = $null
+    $experimentMethodologyHash = $null
+
+    if ($experiment.PSObject.Properties["methodology"]) {
+
+        if (
+            $experiment.methodology.PSObject.Properties["methodology_id"]
+        ) {
+            $experimentMethodologyId =
+                [string]$experiment.methodology.methodology_id
+        }
+        elseif (
+            $experiment.methodology.PSObject.Properties["id"]
+        ) {
+            $experimentMethodologyId =
+                [string]$experiment.methodology.id
+        }
+
+        if (
+            $experiment.methodology.PSObject.Properties["sha256"]
+        ) {
+            $experimentMethodologyHash =
+                [string]$experiment.methodology.sha256
+        }
+    }
+
+    if (
+        -not $experimentMethodologyId -or
+        $experimentMethodologyId -ne $methodology.id
+    ) {
+        throw (
+            "Experiment does not explicitly reference " +
+            "$($methodology.id)."
+        )
+    }
+
+    if (
+        -not $experimentMethodologyHash -or
+        $experimentMethodologyHash.ToLowerInvariant() -ne
+            $methodologyHash
+    ) {
+        throw (
+            "Experiment methodology hash does not match the frozen contract."
+        )
+    }
+
+    $targetFields = @(
+        "machine_ref",
+        "environment_ref",
+        "host_session_ref",
+        "backend_ref",
+        "model_ref",
+        "model_artifact_ref"
+    )
+
+    foreach ($field in $targetFields) {
+
+        $suiteValue = $suite.target.$field
+        $experimentValue = $experiment.target.$field
+
+        if (
+            $null -eq $suiteValue -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$suiteValue
+            )
+        ) {
+            throw "Suite target is missing $field."
+        }
+
+        if (
+            $null -eq $experimentValue -or
+            [string]::IsNullOrWhiteSpace(
+                [string]$experimentValue
+            )
+        ) {
+            throw "Experiment target is missing $field."
+        }
+
+        if (
+            [string]$experimentValue -ne
+            [string]$suiteValue
+        ) {
+            throw (
+                "Experiment target '$field' does not match suite target."
+            )
+        }
+    }
+
+    if ($suite.target.backend_ref -ne $backend.id) {
+        throw "Suite backend binding does not match backend registry."
+    }
+
+    # --------------------------------------------------------
+    # CURRENT HOST SESSION VALIDATION
+    #
+    # A reboot must never silently reuse an old host-session ID.
+    # --------------------------------------------------------
+
+    $hostSessionFile = Join-Path `
+        "$Script:BenchRoot\registry\host-sessions\$($suite.target.host_session_ref)" `
+        "host-session.json"
+
+    $hostSession = Read-JsonFile $hostSessionFile
+
+    $os = Get-CimInstance Win32_OperatingSystem
+
+    if ($null -eq $os.LastBootUpTime) {
+        throw "Unable to determine current Windows boot time."
+    }
+
+    $currentBootUtc =
+        $os.LastBootUpTime.ToUniversalTime()
+
+    try {
+
+        $recordedBootUtc =
+            [datetimeoffset]::Parse(
+                [string]$hostSession.boot_time_utc
+            ).UtcDateTime
+    }
+    catch {
+
+        throw "Host-session record contains an invalid boot_time_utc."
+    }
+
+    $bootDifferenceSeconds =
+        [math]::Abs(
+            (
+                $currentBootUtc -
+                $recordedBootUtc
+            ).TotalSeconds
+        )
+
+    if ($bootDifferenceSeconds -gt 2) {
+
+        throw (
+            "Host-session identity is stale after a reboot. " +
+            "Rebind machine/environment/host-session identity before benchmarking."
+        )
+    }
+
+    # --------------------------------------------------------
+    # BACKEND EXECUTABLE IDENTITY
+    # --------------------------------------------------------
+
+    $currentExecutableHash =
+        Get-Sha256 $Script:Llama
+
+    $registryExecutableHash =
+        [string]$backend.identity.executable.sha256
+
+    if (
+        $currentExecutableHash -ne
+        $registryExecutableHash.ToLowerInvariant()
+    ) {
+        throw (
+            "llama.exe SHA256 no longer matches the backend registry. " +
+            "Create a new backend identity before benchmarking."
+        )
+    }
+
+    # --------------------------------------------------------
+    # MODEL ARTIFACT BINDING
+    #
+    # The full GGUF hash was frozen when the artifact registry
+    # was created. Rehashing a 5 GiB model before every run is
+    # intentionally avoided; path and size are checked here and
+    # the exact artifact SHA256 is preserved in every run.
+    # --------------------------------------------------------
+
+    $artifactRef =
+        [string]$suite.target.model_artifact_ref
+
+    if (-not $artifactRef.StartsWith("sha256:")) {
+        throw "Unsupported model artifact identity: $artifactRef"
+    }
+
+    $artifactHash =
+        $artifactRef.Substring(7).ToLowerInvariant()
+
+    $artifactFolder =
+        "sha256-" + $artifactHash
+
+    $artifactFile = Join-Path `
+        "$Script:BenchRoot\registry\model-artifacts\$artifactFolder" `
+        "artifact.json"
+
+    $artifact = Read-JsonFile $artifactFile
+
+    if (
+        ([string]$artifact.sha256).ToLowerInvariant() -ne
+        $artifactHash
+    ) {
+        throw "Model artifact registry hash mismatch."
+    }
+
+    $modelItem = Get-Item $Script:Model
+
+    if (
+        [uint64]$modelItem.Length -ne
+        [uint64]$artifact.size_bytes
+    ) {
+        throw (
+            "Model file size differs from the frozen model artifact. " +
+            "Do not benchmark until the artifact identity is rebuilt."
+        )
+    }
+
+    if (
+        $artifact.source_path -and
+        [string]$artifact.source_path -ne
+        $Script:Model
+    ) {
+        throw "Model artifact source path differs from the configured harness model path."
+    }
+
+    return [pscustomobject][ordered]@{
+
+        suite =
+            $suite
+
+        backend =
+            $backend
+
+        methodology =
+            $methodology
+
+        methodology_sha256 =
+            $methodologyHash
+
+        experiment =
+            $experiment
+
+        experiment_file =
+            $experimentFile
+
+        host_session =
+            $hostSession
+
+        host_session_file =
+            $hostSessionFile
+
+        model_artifact =
+            $artifact
+
+        model_artifact_file =
+            $artifactFile
+
+        executable_sha256 =
+            $currentExecutableHash
+
+        current_boot_time_utc =
+            $currentBootUtc.ToString("o")
+    }
+}
+
+
+function Set-ExperimentRunReference {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Experiment,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ExperimentFile,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RunId
+    )
+
+    $existingRuns = @()
+
+    if ($Experiment.PSObject.Properties["runs"]) {
+        $existingRuns = @($Experiment.runs)
+    }
+
+    if ($RunId -notin $existingRuns) {
+        $existingRuns += $RunId
+    }
+
+    Set-ObjectProperty `
+        $Experiment `
+        "runs" `
+        @($existingRuns)
+
+    Set-ObjectProperty `
+        $Experiment `
+        "updated_at" `
+        (Get-Date).ToString("o")
+
+    if (
+        $Experiment.PSObject.Properties["status"] -and
+        $Experiment.status -eq "planned"
+    ) {
+        $Experiment.status = "running"
+    }
+
+    Write-JsonFile `
+        -Object $Experiment `
+        -Path $ExperimentFile
+}
+
+
+function Resolve-WorkloadProfile {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Methodology,
+
+        [string]$RequestedWorkloadId,
+
+        [int]$RequestedPromptTokens,
+
+        [string]$RequestedGenTokens
+    )
+
+    $profiles =
+        @($Methodology.workload_profiles)
+
+    if (
+        -not
+        [string]::IsNullOrWhiteSpace(
+            $RequestedWorkloadId
+        )
+    ) {
+
+        $matched = @(
+            $profiles |
+            Where-Object {
+                $_.id -eq $RequestedWorkloadId
+            }
+        )
+
+        if ($matched.Count -ne 1) {
+            throw "Unknown methodology workload profile: $RequestedWorkloadId"
+        }
+
+        return $RequestedWorkloadId
+    }
+
+    if (
+        $RequestedPromptTokens -eq 2048 -and
+        $RequestedGenTokens.Trim() -eq "128"
+    ) {
+        return "synthetic-interactive-v1"
+    }
+
+    $normalizedGen = (
+        Get-UniqueStringValues $RequestedGenTokens
+    ) -join ","
+
+    if (
+        $RequestedPromptTokens -eq 0 -and
+        $normalizedGen -eq "128,512,2048,8192"
+    ) {
+        return "decode-scaling-v1"
+    }
+
+    return "custom"
+}
+
+
+function Get-SweepMetadata {
+
+    param(
+        $Parameters
+    )
+
+    $dimensions = @()
+
+    foreach (
+        $definition in @(
+            [pscustomobject]@{
+                id = "gen_tokens"
+                value = $Parameters.gen_tokens
+            },
+            [pscustomobject]@{
+                id = "threads"
+                value = $Parameters.threads
+            },
+            [pscustomobject]@{
+                id = "gpu_layers"
+                value = $Parameters.gpu_layers
+            },
+            [pscustomobject]@{
+                id = "cpu_moe"
+                value = $Parameters.cpu_moe
+            }
+        )
+    ) {
+
+        $values =
+            Get-UniqueStringValues `
+                $definition.value
+
+        if ($values.Count -gt 1) {
+
+            $dimensions +=
+                [pscustomobject][ordered]@{
+                    parameter_id =
+                        $definition.id
+
+                    requested_values =
+                        @($values)
+                }
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+
+        invocation_mode =
+            if ($dimensions.Count -gt 0) {
+                "native_multi_value"
+            }
+            else {
+                "single_configuration"
+            }
+
+        dimensions =
+            @($dimensions)
+
+        single_backend_process =
+            $true
+
+        shared_model_load =
+            $true
+
+        measurement_order =
+            @()
+
+        measurement_order_state =
+            "pending"
+
+        order_basis =
+            "llama-bench output row order"
     }
 }
 
@@ -256,7 +938,6 @@ function Resolve-RunPath {
     return $latest.FullName
 }
 
-
 # ============================================================
 # STATUS
 # ============================================================
@@ -273,28 +954,74 @@ function Write-RunStatus {
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
+        [string]$RunId = "",
+
+        [string]$EngineState = "",
+
         $EngineExitCode = $null,
 
         [string]$ParserState = "not_run",
 
-        [string]$ParserError = ""
+        [string]$ParserError = "",
+
+        [string]$HarnessState = "ok",
+
+        [string]$HarnessError = "",
+
+        [string]$TerminationCategory = "",
+
+        $ProcessCompleted = $null
     )
 
     $status = [ordered]@{
-        state            = $State
-        message          = $Message
-        engine_exit_code = $EngineExitCode
-        parser_state     = $ParserState
-        parser_error     = $ParserError
-        worker_pid       = $PID
-        updated_at       = (Get-Date).ToString("o")
+
+        schema =
+            $Script:StatusSchema
+
+        run_id =
+            $RunId
+
+        state =
+            $State
+
+        message =
+            $Message
+
+        engine_state =
+            $EngineState
+
+        engine_exit_code =
+            $EngineExitCode
+
+        parser_state =
+            $ParserState
+
+        parser_error =
+            $ParserError
+
+        harness_state =
+            $HarnessState
+
+        harness_error =
+            $HarnessError
+
+        termination_category =
+            $TerminationCategory
+
+        process_completed =
+            $ProcessCompleted
+
+        worker_pid =
+            $PID
+
+        updated_at =
+            (Get-Date).ToString("o")
     }
 
     Write-JsonFile `
         -Object $status `
         -Path $Path
 }
-
 
 # ============================================================
 # LLAMA-BENCH JSON PARSER
@@ -304,7 +1031,9 @@ function Parse-BenchJson {
 
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Path
+        [string]$Path,
+
+        $RequestedParameters = $null
     )
 
     if (-not (Test-Path $Path)) {
@@ -315,17 +1044,8 @@ function Parse-BenchJson {
         throw "bench.json is empty."
     }
 
-
     # --------------------------------------------------------
     # NORMALIZE TOP-LEVEL JSON
-    #
-    # Windows PowerShell 5.1 can return a top-level JSON array
-    # as one System.Object[] pipeline object.
-    #
-    # PowerShell 7 commonly enumerates it differently.
-    #
-    # We explicitly flatten exactly one top-level array so each
-    # llama-bench JSON record is always one row.
     # --------------------------------------------------------
 
     $parsed = ConvertFrom-Json (
@@ -345,20 +1065,12 @@ function Parse-BenchJson {
         $rows += ,$parsed
     }
 
-
     if ($rows.Count -eq 0) {
         throw "bench.json contains no benchmark rows."
     }
 
-
     # --------------------------------------------------------
     # SCALAR VALIDATOR
-    #
-    # llama-bench fields such as n_prompt, n_gen, n_threads,
-    # etc. must be scalar in one result row.
-    #
-    # A one-element array is tolerated and normalized.
-    # A multi-element array is treated as a schema error.
     # --------------------------------------------------------
 
     function Get-ScalarValue {
@@ -398,9 +1110,8 @@ function Parse-BenchJson {
         return $Value
     }
 
-
     $measurements = @()
-
+    $measurementOrdinal = 0
 
     for (
         $rowIndex = 0;
@@ -414,7 +1125,6 @@ function Parse-BenchJson {
             continue
         }
 
-
         $avgRaw = Get-ScalarValue `
             -Value $row.avg_ts `
             -Field "avg_ts" `
@@ -423,7 +1133,6 @@ function Parse-BenchJson {
         if ($null -eq $avgRaw) {
             continue
         }
-
 
         $stdRaw = Get-ScalarValue `
             -Value $row.stddev_ts `
@@ -465,7 +1174,6 @@ function Parse-BenchJson {
             -Field "n_cpu_moe" `
             -RowIndex $rowIndex
 
-
         $nPrompt = 0
         $nGen = 0
 
@@ -476,7 +1184,6 @@ function Parse-BenchJson {
         if ($null -ne $genRaw) {
             $nGen = [int64]$genRaw
         }
-
 
         $kind = "unknown"
 
@@ -499,7 +1206,6 @@ function Parse-BenchJson {
             $kind = "pg"
         }
 
-
         $stdValue = $null
 
         if ($null -ne $stdRaw) {
@@ -510,74 +1216,380 @@ function Parse-BenchJson {
             )
         }
 
+        $measurementOrdinal++
 
-        $measurement = [pscustomobject]@{
+        $measurementId =
+            "measurement-" +
+            $measurementOrdinal.ToString("D4")
 
-            row_index      = $rowIndex
+        $samplesTs = @($row.samples_ts)
+        $samplesNs = @($row.samples_ns)
 
-            kind           = $kind
+        $sampleCount = [math]::Max(
+            $samplesTs.Count,
+            $samplesNs.Count
+        )
 
-            n_prompt       = $nPrompt
-            n_gen          = $nGen
+        $repetitionSamples = @()
 
-            avg_ts         = [math]::Round(
-                [double]$avgRaw,
-                4
-            )
+        for (
+            $sampleIndex = 0;
+            $sampleIndex -lt $sampleCount;
+            $sampleIndex++
+        ) {
 
-            stddev_ts      = $stdValue
+            $sampleTs = $null
+            $sampleNs = $null
 
-            avg_ns         = $row.avg_ns
-            stddev_ns      = $row.stddev_ns
+            if ($sampleIndex -lt $samplesTs.Count) {
+                $sampleTs = $samplesTs[$sampleIndex]
+            }
 
-            n_batch        = $batchRaw
-            n_ubatch       = $ubatchRaw
-            n_threads      = $threadsRaw
+            if ($sampleIndex -lt $samplesNs.Count) {
+                $sampleNs = $samplesNs[$sampleIndex]
+            }
 
-            n_gpu_layers   = $gpuLayersRaw
-            n_cpu_moe      = $cpuMoeRaw
+            $repetitionSamples +=
+                [pscustomobject][ordered]@{
 
-            cpu_mask       = $row.cpu_mask
-            cpu_strict     = $row.cpu_strict
-            poll           = $row.poll
+                    repetition =
+                        $sampleIndex + 1
 
-            type_k         = $row.type_k
-            type_v         = $row.type_v
+                    tokens_per_second =
+                        $sampleTs
 
-            flash_attn     = $row.flash_attn
-
-            no_kv_offload  = $row.no_kv_offload
-            no_op_offload  = $row.no_op_offload
-            no_host        = $row.no_host
-
-            split_mode     = $row.split_mode
-            main_gpu       = $row.main_gpu
-            devices        = $row.devices
-
-            backends       = $row.backends
-
-            build_commit   = $row.build_commit
-            build_number   = $row.build_number
-
-            cpu_info       = $row.cpu_info
-            gpu_info       = $row.gpu_info
-
-            model_filename = $row.model_filename
-            model_type     = $row.model_type
-
-            model_size     = $row.model_size
-            model_n_params = $row.model_n_params
-
-            test_time      = $row.test_time
-
-            samples_ts     = @($row.samples_ts)
-            samples_ns     = @($row.samples_ns)
+                    nanoseconds =
+                        $sampleNs
+                }
         }
 
+        $requestedSnapshot = [ordered]@{}
+
+        if ($null -ne $RequestedParameters) {
+
+            $requestedSnapshot = [ordered]@{
+
+                prompt_tokens =
+                    $RequestedParameters.prompt_tokens
+
+                gen_tokens =
+                    $RequestedParameters.gen_tokens
+
+                repetitions =
+                    $RequestedParameters.repetitions
+
+                batch =
+                    $RequestedParameters.batch
+
+                ubatch =
+                    $RequestedParameters.ubatch
+
+                threads =
+                    $RequestedParameters.threads
+
+                gpu_layers =
+                    $RequestedParameters.gpu_layers
+
+                cpu_moe =
+                    $RequestedParameters.cpu_moe
+
+                cpu_mask =
+                    $RequestedParameters.cpu_mask
+
+                cpu_strict =
+                    $RequestedParameters.cpu_strict
+
+                poll =
+                    $RequestedParameters.poll
+
+                kv_k =
+                    $RequestedParameters.kv_k
+
+                kv_v =
+                    $RequestedParameters.kv_v
+
+                flash_attention =
+                    $RequestedParameters.flash_attention
+
+                device =
+                    $RequestedParameters.device
+
+                load_mode =
+                    $RequestedParameters.load_mode
+
+                no_kv_offload =
+                    $RequestedParameters.no_kv_offload
+
+                no_op_offload =
+                    $RequestedParameters.no_op_offload
+
+                no_host =
+                    $RequestedParameters.no_host
+
+                numa =
+                    $RequestedParameters.numa
+            }
+        }
+
+        $resolvedSnapshot = [ordered]@{
+
+            n_prompt =
+                $nPrompt
+
+            n_gen =
+                $nGen
+
+            n_batch =
+                $batchRaw
+
+            n_ubatch =
+                $ubatchRaw
+
+            n_threads =
+                $threadsRaw
+
+            n_gpu_layers =
+                $gpuLayersRaw
+
+            n_cpu_moe =
+                $cpuMoeRaw
+
+            cpu_mask =
+                $row.cpu_mask
+
+            cpu_strict =
+                $row.cpu_strict
+
+            poll =
+                $row.poll
+
+            type_k =
+                $row.type_k
+
+            type_v =
+                $row.type_v
+
+            flash_attn =
+                $row.flash_attn
+
+            no_kv_offload =
+                $row.no_kv_offload
+
+            no_op_offload =
+                $row.no_op_offload
+
+            no_host =
+                $row.no_host
+
+            split_mode =
+                $row.split_mode
+
+            main_gpu =
+                $row.main_gpu
+
+            devices =
+                $row.devices
+        }
+
+        $observedSnapshot = [ordered]@{
+
+            backends =
+                $row.backends
+
+            build_commit =
+                $row.build_commit
+
+            build_number =
+                $row.build_number
+
+            cpu_info =
+                $row.cpu_info
+
+            gpu_info =
+                $row.gpu_info
+
+            model_filename =
+                $row.model_filename
+
+            model_type =
+                $row.model_type
+
+            model_size =
+                $row.model_size
+
+            model_n_params =
+                $row.model_n_params
+
+            test_time =
+                $row.test_time
+        }
+
+        $measurement = [pscustomobject][ordered]@{
+
+            measurement_id =
+                $measurementId
+
+            order_index =
+                $measurementOrdinal - 1
+
+            source_row_index =
+                $rowIndex
+
+            kind =
+                $kind
+
+            requested =
+                [pscustomobject]$requestedSnapshot
+
+            resolved =
+                [pscustomobject]$resolvedSnapshot
+
+            observed =
+                [pscustomobject]$observedSnapshot
+
+            performance = [pscustomobject][ordered]@{
+
+                avg_tokens_per_second =
+                    [math]::Round(
+                        [double]$avgRaw,
+                        4
+                    )
+
+                stddev_tokens_per_second =
+                    $stdValue
+
+                avg_nanoseconds =
+                    $row.avg_ns
+
+                stddev_nanoseconds =
+                    $row.stddev_ns
+            }
+
+            repetitions =
+                @($repetitionSamples)
+
+            repetition_count =
+                $repetitionSamples.Count
+
+            # ------------------------------------------------
+            # Compatibility fields retained for show/repair and
+            # historical analysis code.
+            # ------------------------------------------------
+
+            row_index =
+                $rowIndex
+
+            n_prompt =
+                $nPrompt
+
+            n_gen =
+                $nGen
+
+            avg_ts =
+                [math]::Round(
+                    [double]$avgRaw,
+                    4
+                )
+
+            stddev_ts =
+                $stdValue
+
+            avg_ns =
+                $row.avg_ns
+
+            stddev_ns =
+                $row.stddev_ns
+
+            n_batch =
+                $batchRaw
+
+            n_ubatch =
+                $ubatchRaw
+
+            n_threads =
+                $threadsRaw
+
+            n_gpu_layers =
+                $gpuLayersRaw
+
+            n_cpu_moe =
+                $cpuMoeRaw
+
+            cpu_mask =
+                $row.cpu_mask
+
+            cpu_strict =
+                $row.cpu_strict
+
+            poll =
+                $row.poll
+
+            type_k =
+                $row.type_k
+
+            type_v =
+                $row.type_v
+
+            flash_attn =
+                $row.flash_attn
+
+            no_kv_offload =
+                $row.no_kv_offload
+
+            no_op_offload =
+                $row.no_op_offload
+
+            no_host =
+                $row.no_host
+
+            split_mode =
+                $row.split_mode
+
+            main_gpu =
+                $row.main_gpu
+
+            devices =
+                $row.devices
+
+            backends =
+                $row.backends
+
+            build_commit =
+                $row.build_commit
+
+            build_number =
+                $row.build_number
+
+            cpu_info =
+                $row.cpu_info
+
+            gpu_info =
+                $row.gpu_info
+
+            model_filename =
+                $row.model_filename
+
+            model_type =
+                $row.model_type
+
+            model_size =
+                $row.model_size
+
+            model_n_params =
+                $row.model_n_params
+
+            test_time =
+                $row.test_time
+
+            samples_ts =
+                @($samplesTs)
+
+            samples_ns =
+                @($samplesNs)
+        }
 
         $measurements += $measurement
     }
-
 
     if ($measurements.Count -eq 0) {
 
@@ -587,10 +1599,8 @@ function Parse-BenchJson {
         )
     }
 
-
     return $measurements
 }
-
 
 # ============================================================
 # MEMORY / FALLBACK PARSER
@@ -603,66 +1613,175 @@ function Parse-MemoryLog {
         [string]$Path
     )
 
-
     $summary = [ordered]@{
 
-        initial_gpu_free_mib = $null
+        initial_gpu_free_mib =
+            $null
 
-        full_gpu_offload     = $null
-        offloaded_layers     = $null
-        total_layers         = $null
+        full_gpu_offload =
+            $null
 
-        cpu_mapped_model_mib = $null
-        gpu_model_mib        = $null
+        offloaded_layers =
+            $null
 
+        total_layers =
+            $null
 
-        # Maximum values across every context initialization.
-        # These preserve the convenient old summary interface.
-        gpu_kv_mib           = $null
-        gpu_recurrent_mib    = $null
-        gpu_compute_mib      = $null
-        host_compute_mib     = $null
+        cpu_mapped_model_mib =
+            $null
 
+        gpu_model_mib =
+            $null
 
-        # Full per-test allocation history.
-        snapshot_count       = 0
-        context_snapshots    = @()
+        gpu_kv_mib =
+            $null
 
+        host_kv_mib =
+            $null
 
-        pinned_memory_failure = $false
-        allocation_failure    = $false
-        gpu_fallback           = $false
+        gpu_recurrent_mib =
+            $null
 
-        summary_mode          = "max_across_contexts"
+        gpu_compute_mib =
+            $null
 
-        raw_lines             = @()
+        host_compute_mib =
+            $null
+
+        snapshot_count =
+            0
+
+        context_snapshots =
+            @()
+
+        linkage = [ordered]@{
+
+            state =
+                "not_attempted"
+
+            method =
+                "measurement_id_assigned_from_context_creation_order"
+
+            linked_snapshot_count =
+                0
+
+            measurement_count =
+                0
+
+            note = (
+                "Post-architecture snapshots receive explicit measurement IDs. " +
+                "The current llama-bench log does not emit those IDs itself, " +
+                "so correspondence is established from context creation order " +
+                "and then persisted explicitly."
+            )
+        }
+
+        pinned_memory_failure =
+            $false
+
+        allocation_failure =
+            $false
+
+        gpu_fallback =
+            $false
+
+        partial_offload =
+            $null
+
+        summary_mode =
+            "max_across_contexts"
+
+        raw_lines =
+            @()
     }
-
 
     if (-not (Test-Path $Path)) {
         return [pscustomobject]$summary
     }
 
+    $allLines = @(Get-Content $Path)
 
-    $interesting = @(
-        Get-Content $Path |
-        Select-String -Pattern `
-            "buffer size|KV self size|compute buffer|offloaded|MiB free|GiB free|OutOfDeviceMemory|pinned memory|allocation failed" |
-        ForEach-Object {
-            $_.Line
-        }
+    $hasExplicitContextMarkers = (
+        @(
+            $allLines |
+            Where-Object {
+                $_ -match
+                    'llama_context.*construct|constructing llama_context'
+            }
+        ).Count -gt 0
     )
 
-
-    $summary.raw_lines = $interesting
-
-
+    $interesting = @()
     $snapshots = @()
     $current = $null
 
+    function New-MemorySnapshot {
 
-    foreach ($line in $interesting) {
+        param(
+            [int]$Index
+        )
 
+        return [ordered]@{
+
+            index =
+                $Index
+
+            measurement_id =
+                $null
+
+            measurement_order_index =
+                $null
+
+            linkage_state =
+                "unlinked"
+
+            gpu_kv_mib =
+                $null
+
+            host_kv_mib =
+                $null
+
+            gpu_recurrent_mib =
+                $null
+
+            gpu_compute_mib =
+                $null
+
+            host_compute_mib =
+                $null
+        }
+    }
+    foreach ($line in $allLines) {
+
+        $isInteresting = (
+            $line -match
+                'llama_context.*construct|constructing llama_context|buffer size|KV self size|compute buffer|offloaded|MiB free|GiB free|OutOfDeviceMemory|pinned memory|allocation failed'
+        )
+
+        if ($isInteresting) {
+            $interesting += $line
+        }
+
+        # ----------------------------------------------------
+        # EXPLICIT CONTEXT START
+        # ----------------------------------------------------
+
+        if (
+            $hasExplicitContextMarkers -and
+            $line -match
+                'llama_context.*construct|constructing llama_context'
+        ) {
+
+            if ($null -ne $current) {
+                $snapshots += [pscustomobject]$current
+            }
+
+            $current =
+                New-MemorySnapshot `
+                    -Index $snapshots.Count
+
+            continue
+        }
 
         # ----------------------------------------------------
         # GLOBAL MODEL / DEVICE DATA
@@ -670,125 +1789,166 @@ function Parse-MemoryLog {
 
         if (
             $line -match
-            '(\d+(?:\.\d+)?)\s+MiB free'
+                '(\d+(?:\.\d+)?)\s+MiB free'
         ) {
-
-            $summary.initial_gpu_free_mib = [double]$Matches[1]
+            $summary.initial_gpu_free_mib =
+                [double]$Matches[1]
         }
-
 
         if (
             $line -match
-            'offloaded\s+(\d+)/(\d+)\s+layers to GPU'
+                'offloaded\s+(\d+)/(\d+)\s+layers to GPU'
         ) {
 
-            $summary.offloaded_layers = [int]$Matches[1]
-            $summary.total_layers = [int]$Matches[2]
+            $summary.offloaded_layers =
+                [int]$Matches[1]
+
+            $summary.total_layers =
+                [int]$Matches[2]
 
             $summary.full_gpu_offload = (
                 $summary.offloaded_layers -eq
                 $summary.total_layers
             )
-        }
 
+            $summary.partial_offload = (
+                $summary.offloaded_layers -gt 0 -and
+                $summary.offloaded_layers -lt
+                $summary.total_layers
+            )
+        }
 
         if (
             $line -match
-            'CPU_Mapped model buffer size\s*=\s*([\d.]+)\s+MiB'
+                'CPU_Mapped model buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
-
-            $summary.cpu_mapped_model_mib = [double]$Matches[1]
+            $summary.cpu_mapped_model_mib =
+                [double]$Matches[1]
         }
-
 
         if (
             $line -match
-            'Vulkan0 model buffer size\s*=\s*([\d.]+)\s+MiB'
+                'Vulkan\d+ model buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
-
-            $summary.gpu_model_mib = [double]$Matches[1]
+            $summary.gpu_model_mib =
+                [double]$Matches[1]
         }
-
 
         # ----------------------------------------------------
-        # CONTEXT SNAPSHOT
-        #
-        # In this llama.cpp build every PP/TG configuration
-        # creates a fresh context. The Vulkan KV allocation is
-        # a reliable start marker for that context.
+        # GPU KV BUFFER
         # ----------------------------------------------------
 
         if (
             $line -match
-            'Vulkan0 KV buffer size\s*=\s*([\d.]+)\s+MiB'
+                'Vulkan\d+ KV buffer size\s*=\s*([\d.]+)\s+MiB'
         ) {
 
-            if ($null -ne $current) {
+            if ($null -eq $current) {
 
-                $snapshots += [pscustomobject]$current
+                $current =
+                    New-MemorySnapshot `
+                        -Index $snapshots.Count
+            }
+            elseif (
+                -not $hasExplicitContextMarkers -and
+                $null -ne $current.gpu_kv_mib
+            ) {
+
+                $snapshots +=
+                    [pscustomobject]$current
+
+                $current =
+                    New-MemorySnapshot `
+                        -Index $snapshots.Count
             }
 
+            $current.gpu_kv_mib =
+                [double]$Matches[1]
 
-            $current = [ordered]@{
+            continue
+        }
 
-                index             = $snapshots.Count
+        # ----------------------------------------------------
+        # HOST / CPU KV BUFFER
+        # ----------------------------------------------------
 
-                gpu_kv_mib        = [double]$Matches[1]
+        if (
+            $line -match
+                '(?:CPU|CPU_Mapped|Vulkan_Host) KV buffer size\s*=\s*([\d.]+)\s+MiB'
+        ) {
 
-                gpu_recurrent_mib = $null
+            if ($null -eq $current) {
 
-                gpu_compute_mib   = $null
+                $current =
+                    New-MemorySnapshot `
+                        -Index $snapshots.Count
+            }
+            elseif (
+                -not $hasExplicitContextMarkers -and
+                $null -ne $current.host_kv_mib
+            ) {
 
-                host_compute_mib  = $null
+                $snapshots +=
+                    [pscustomobject]$current
+
+                $current =
+                    New-MemorySnapshot `
+                        -Index $snapshots.Count
+            }
+
+            $current.host_kv_mib =
+                [double]$Matches[1]
+
+            continue
+        }
+
+        if (
+            $null -ne $current -and
+            $line -match
+                'Vulkan\d+ RS buffer size\s*=\s*([\d.]+)\s+MiB'
+        ) {
+
+            $current.gpu_recurrent_mib =
+                [double]$Matches[1]
+
+            continue
+        }
+
+        # Only sched_reserve lines are treated as allocation
+        # events. Destructor lines are intentionally ignored.
+
+        if (
+            $null -ne $current -and
+            $line -match
+                '^sched_reserve:\s+Vulkan\d+ compute buffer size\s*=\s*([\d.]+)\s+MiB'
+        ) {
+
+            $current.gpu_compute_mib =
+                [double]$Matches[1]
+
+            continue
+        }
+
+        if (
+            $null -ne $current -and
+            $line -match
+                '^sched_reserve:\s+(?:Vulkan_Host|CPU(?:_Mapped)?) compute buffer size\s*=\s*([\d.]+)\s+MiB'
+        ) {
+
+            $current.host_compute_mib =
+                [double]$Matches[1]
+
+            if (-not $hasExplicitContextMarkers) {
+
+                $snapshots +=
+                    [pscustomobject]$current
+
+                $current =
+                    $null
             }
 
             continue
         }
-
-
-        if (
-            $null -ne $current -and
-            $line -match
-            'Vulkan0 RS buffer size\s*=\s*([\d.]+)\s+MiB'
-        ) {
-
-            $current.gpu_recurrent_mib = [double]$Matches[1]
-
-            continue
-        }
-
-
-        # Only sched_reserve lines are allocation events.
-        # ~llama_context destructor lines repeat the values and
-        # are intentionally ignored.
-
-        if (
-            $null -ne $current -and
-            $line -match
-            '^sched_reserve:\s+Vulkan0 compute buffer size\s*=\s*([\d.]+)\s+MiB'
-        ) {
-
-            $current.gpu_compute_mib = [double]$Matches[1]
-
-            continue
-        }
-
-
-        if (
-            $null -ne $current -and
-            $line -match
-            '^sched_reserve:\s+Vulkan_Host compute buffer size\s*=\s*([\d.]+)\s+MiB'
-        ) {
-
-            $current.host_compute_mib = [double]$Matches[1]
-
-            $snapshots += [pscustomobject]$current
-
-            $current = $null
-
-            continue
-        }
-
 
         # ----------------------------------------------------
         # FAILURE / FALLBACK FLAGS
@@ -796,140 +1956,318 @@ function Parse-MemoryLog {
 
         if (
             $line -match
-            'Failed to allocate pinned memory'
+                'Failed to allocate pinned memory'
         ) {
-
-            $summary.pinned_memory_failure = $true
+            $summary.pinned_memory_failure =
+                $true
         }
-
 
         if (
             $line -match
-            'OutOfDeviceMemory|allocation failed'
+                'OutOfDeviceMemory|allocation failed'
         ) {
-
-            $summary.allocation_failure = $true
+            $summary.allocation_failure =
+                $true
         }
     }
 
-
     if ($null -ne $current) {
-
         $snapshots += [pscustomobject]$current
     }
-
 
     for (
         $i = 0;
         $i -lt $snapshots.Count;
         $i++
     ) {
-
         $snapshots[$i].index = $i
     }
 
+    $summary.raw_lines =
+        @($interesting)
 
-    $summary.context_snapshots = @($snapshots)
-    $summary.snapshot_count = $snapshots.Count
+    $summary.context_snapshots =
+        @($snapshots)
 
+    $summary.snapshot_count =
+        $snapshots.Count
 
     # --------------------------------------------------------
     # MAXIMUM SUMMARY VALUES
     # --------------------------------------------------------
 
-    if ($snapshots.Count -gt 0) {
+    foreach (
+        $definition in @(
+            [pscustomobject]@{
+                source = "gpu_kv_mib"
+                target = "gpu_kv_mib"
+            },
+            [pscustomobject]@{
+                source = "host_kv_mib"
+                target = "host_kv_mib"
+            },
+            [pscustomobject]@{
+                source = "gpu_recurrent_mib"
+                target = "gpu_recurrent_mib"
+            },
+            [pscustomobject]@{
+                source = "gpu_compute_mib"
+                target = "gpu_compute_mib"
+            },
+            [pscustomobject]@{
+                source = "host_compute_mib"
+                target = "host_compute_mib"
+            }
+        )
+    ) {
 
-
-        $kvValues = @(
+        $values = @(
             $snapshots |
-            Where-Object {
-                $null -ne $_.gpu_kv_mib
-            } |
             ForEach-Object {
-                [double]$_.gpu_kv_mib
+
+                $value =
+                    $_.PSObject.Properties[
+                        $definition.source
+                    ].Value
+
+                if ($null -ne $value) {
+                    [double]$value
+                }
             }
         )
 
+        if ($values.Count -gt 0) {
 
-        $rsValues = @(
-            $snapshots |
-            Where-Object {
-                $null -ne $_.gpu_recurrent_mib
-            } |
-            ForEach-Object {
-                [double]$_.gpu_recurrent_mib
-            }
-        )
-
-
-        $gpuComputeValues = @(
-            $snapshots |
-            Where-Object {
-                $null -ne $_.gpu_compute_mib
-            } |
-            ForEach-Object {
-                [double]$_.gpu_compute_mib
-            }
-        )
-
-
-        $hostComputeValues = @(
-            $snapshots |
-            Where-Object {
-                $null -ne $_.host_compute_mib
-            } |
-            ForEach-Object {
-                [double]$_.host_compute_mib
-            }
-        )
-
-
-        if ($kvValues.Count -gt 0) {
-
-            $summary.gpu_kv_mib = (
-                $kvValues |
+            $maximum = (
+                $values |
                 Measure-Object -Maximum
             ).Maximum
-        }
 
-
-        if ($rsValues.Count -gt 0) {
-
-            $summary.gpu_recurrent_mib = (
-                $rsValues |
-                Measure-Object -Maximum
-            ).Maximum
-        }
-
-
-        if ($gpuComputeValues.Count -gt 0) {
-
-            $summary.gpu_compute_mib = (
-                $gpuComputeValues |
-                Measure-Object -Maximum
-            ).Maximum
-        }
-
-
-        if ($hostComputeValues.Count -gt 0) {
-
-            $summary.host_compute_mib = (
-                $hostComputeValues |
-                Measure-Object -Maximum
-            ).Maximum
+            $summary[
+                $definition.target
+            ] = $maximum
         }
     }
-
 
     $summary.gpu_fallback = (
         $summary.pinned_memory_failure -or
         $summary.allocation_failure
     )
 
-
     return [pscustomobject]$summary
 }
 
+
+function Link-MemorySnapshotsToMeasurements {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        $Memory,
+
+        [Parameter(Mandatory = $true)]
+        [array]$Measurements
+    )
+
+    $snapshots =
+        @($Memory.context_snapshots)
+
+    $measurementCount =
+        $Measurements.Count
+
+    $snapshotCount =
+        $snapshots.Count
+
+    $linkCount =
+        [math]::Min(
+            $measurementCount,
+            $snapshotCount
+        )
+
+    for (
+        $i = 0;
+        $i -lt $linkCount;
+        $i++
+    ) {
+
+        Set-ObjectProperty `
+            $snapshots[$i] `
+            "measurement_id" `
+            $Measurements[$i].measurement_id
+
+        Set-ObjectProperty `
+            $snapshots[$i] `
+            "measurement_order_index" `
+            $Measurements[$i].order_index
+
+        Set-ObjectProperty `
+            $snapshots[$i] `
+            "linkage_state" `
+            "linked_by_context_order"
+    }
+
+    for (
+        $i = $linkCount;
+        $i -lt $snapshotCount;
+        $i++
+    ) {
+
+        Set-ObjectProperty `
+            $snapshots[$i] `
+            "linkage_state" `
+            "unmatched_snapshot"
+    }
+
+    $Memory.context_snapshots =
+        @($snapshots)
+
+    $Memory.linkage = [pscustomobject][ordered]@{
+
+        state =
+            if (
+                $measurementCount -eq
+                    $snapshotCount -and
+                $measurementCount -gt 0
+            ) {
+                "complete"
+            }
+            elseif (
+                $measurementCount -eq 0 -and
+                $snapshotCount -eq 0
+            ) {
+                "not_applicable"
+            }
+            else {
+                "partial"
+            }
+
+        method =
+            "measurement_id_assigned_from_context_creation_order"
+
+        linked_snapshot_count =
+            $linkCount
+
+        measurement_count =
+            $measurementCount
+
+        snapshot_count =
+            $snapshotCount
+
+        unmatched_measurements =
+            [math]::Max(
+                0,
+                $measurementCount -
+                $snapshotCount
+            )
+
+        unmatched_snapshots =
+            [math]::Max(
+                0,
+                $snapshotCount -
+                $measurementCount
+            )
+
+        note = (
+            "Every linked snapshot now carries an explicit measurement_id. " +
+            "The linkage basis is preserved rather than implied."
+        )
+    }
+
+    return $Memory
+}
+
+
+function Get-ExecutionAssessment {
+
+    param(
+        $Run,
+        $Memory,
+        [string]$ParserState
+    )
+
+    $engineState =
+        [string]$Run.result.engine_state
+
+    $processCompleted =
+        $false
+
+    if (
+        $Run.result.PSObject.Properties[
+            "process_completed"
+        ]
+    ) {
+        $processCompleted =
+            [bool]$Run.result.process_completed
+    }
+
+    $cleanExecution =
+        $null
+
+    if ($processCompleted) {
+
+        $cleanExecution = (
+            $engineState -eq "complete" -and
+            $ParserState -eq "complete" -and
+            -not $Memory.pinned_memory_failure -and
+            -not $Memory.allocation_failure -and
+            -not $Memory.gpu_fallback
+        )
+    }
+
+    $placementState =
+        "unknown"
+
+    if ($null -ne $Memory.full_gpu_offload) {
+
+        if ($Memory.full_gpu_offload) {
+            $placementState = "full_gpu_offload"
+        }
+        elseif (
+            $null -ne $Memory.offloaded_layers -and
+            [int]$Memory.offloaded_layers -eq 0
+        ) {
+            $placementState = "cpu_only"
+        }
+        elseif ($Memory.partial_offload) {
+            $placementState = "partial_gpu_offload"
+        }
+        else {
+            $placementState = "non_full_gpu_offload"
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+
+        clean_execution =
+            $cleanExecution
+
+        clean_winner_eligible =
+            ($cleanExecution -eq $true)
+
+        fallback_detected =
+            [bool]$Memory.gpu_fallback
+
+        pinned_memory_failure =
+            [bool]$Memory.pinned_memory_failure
+
+        allocation_failure =
+            [bool]$Memory.allocation_failure
+
+        placement_state =
+            $placementState
+
+        full_gpu_offload =
+            $Memory.full_gpu_offload
+
+        partial_offload =
+            $Memory.partial_offload
+
+        interpretation = (
+            "Intentional partial placement is not automatically a fallback. " +
+            "Winner eligibility requires normal engine completion, successful parsing, " +
+            "and no detected allocation/pinned-memory fallback."
+        )
+    }
+}
 
 # ============================================================
 # RESULT UPDATE
@@ -944,21 +2282,24 @@ function Update-RunFromFiles {
         [switch]$Repair
     )
 
-    $runFile = Join-Path $RunDirectory "run.json"
-    $benchFile = Join-Path $RunDirectory "bench.json"
+    $runFile =
+        Join-Path $RunDirectory "run.json"
 
-    $benchErr = Join-Path `
-        $RunDirectory `
-        "bench-stderr.log"
+    $benchFile =
+        Join-Path $RunDirectory "bench.json"
+
+    $benchErr =
+        Join-Path $RunDirectory "bench-stderr.log"
 
     if (-not (Test-Path $benchErr)) {
 
         # Legacy runs used other stderr names.
-        $candidate = Get-ChildItem `
-            $RunDirectory `
-            -File `
-            -Filter "*stderr*.log" `
-            -ErrorAction SilentlyContinue |
+        $candidate =
+            Get-ChildItem `
+                $RunDirectory `
+                -File `
+                -Filter "*stderr*.log" `
+                -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
         if ($candidate) {
@@ -966,7 +2307,8 @@ function Update-RunFromFiles {
         }
     }
 
-    $run = Read-JsonFile $runFile
+    $run =
+        Read-JsonFile $runFile
 
     if (
         $null -eq
@@ -979,21 +2321,47 @@ function Update-RunFromFiles {
                 -NotePropertyValue ([pscustomobject]@{})
     }
 
-    $parserState = "not_run"
-    $parserError = ""
-    $measurements = @()
+    $requestedParameters = $null
+
+    if (
+        $run.PSObject.Properties["configuration"] -and
+        $run.configuration.PSObject.Properties["requested"] -and
+        $run.configuration.requested.PSObject.Properties["parameters"]
+    ) {
+        $requestedParameters =
+            $run.configuration.requested.parameters
+    }
+    elseif (
+        $run.PSObject.Properties["parameters"]
+    ) {
+        $requestedParameters =
+            $run.parameters
+    }
+
+    $parserState =
+        "not_run"
+
+    $parserError =
+        ""
+
+    $measurements =
+        @()
 
     try {
 
         $measurements = @(
-            Parse-BenchJson $benchFile
+            Parse-BenchJson `
+                -Path $benchFile `
+                -RequestedParameters $requestedParameters
         )
 
-        $parserState = "complete"
+        $parserState =
+            "complete"
     }
     catch {
 
-        $parserState = "parser_error"
+        $parserState =
+            "parser_error"
 
         $parserError = (
             $_.Exception.Message +
@@ -1002,7 +2370,16 @@ function Update-RunFromFiles {
         )
     }
 
-    $memory = Parse-MemoryLog $benchErr
+    $memory =
+        Parse-MemoryLog $benchErr
+
+    if ($parserState -eq "complete") {
+
+        $memory =
+            Link-MemorySnapshotsToMeasurements `
+                -Memory $memory `
+                -Measurements $measurements
+    }
 
     Set-ObjectProperty `
         $run.result `
@@ -1017,7 +2394,7 @@ function Update-RunFromFiles {
     Set-ObjectProperty `
         $run.result `
         "measurements" `
-        $measurements
+        @($measurements)
 
     Set-ObjectProperty `
         $run.result `
@@ -1034,6 +2411,163 @@ function Update-RunFromFiles {
         "last_parsed_at" `
         (Get-Date).ToString("o")
 
+    if (
+        $run.PSObject.Properties["configuration"]
+    ) {
+
+        $resolvedMeasurementSets = @(
+            $measurements |
+            ForEach-Object {
+
+                [pscustomobject][ordered]@{
+
+                    measurement_id =
+                        $_.measurement_id
+
+                    order_index =
+                        $_.order_index
+
+                    parameters =
+                        $_.resolved
+                }
+            }
+        )
+
+        $observedMeasurementSets = @(
+            $measurements |
+            ForEach-Object {
+
+                [pscustomobject][ordered]@{
+
+                    measurement_id =
+                        $_.measurement_id
+
+                    order_index =
+                        $_.order_index
+
+                    runtime =
+                        $_.observed
+                }
+            }
+        )
+
+        $run.configuration.resolved =
+            [pscustomobject][ordered]@{
+
+                state =
+                    if ($parserState -eq "complete") {
+                        "complete"
+                    }
+                    else {
+                        "unavailable_due_to_parser_error"
+                    }
+
+                measurements =
+                    @($resolvedMeasurementSets)
+            }
+
+        $run.configuration.observed =
+            [pscustomobject][ordered]@{
+
+                state =
+                    if ($parserState -eq "complete") {
+                        "complete"
+                    }
+                    else {
+                        "partial"
+                    }
+
+                measurements =
+                    @($observedMeasurementSets)
+
+                memory =
+                    $memory
+            }
+    }
+
+    if (
+        $run.PSObject.Properties["execution"]
+    ) {
+
+        $measurementOrder = @(
+            $measurements |
+            Sort-Object order_index |
+            ForEach-Object {
+                $_.measurement_id
+            }
+        )
+
+        if (
+            $run.execution.PSObject.Properties[
+                "process_reuse"
+            ]
+        ) {
+
+            $measurementOrderState =
+                if ($parserState -eq "complete") {
+                    "recorded"
+                }
+                else {
+                    "unavailable_due_to_parser_error"
+                }
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "measurement_order" `
+                @($measurementOrder)
+
+            Set-ObjectProperty `
+                $run.execution.process_reuse `
+                "measurement_order_state" `
+                $measurementOrderState
+        }
+
+        Set-ObjectProperty `
+            $run.execution `
+            "measurement_count" `
+            $measurements.Count
+    }
+
+    $rawRepetitionsPreserved =
+        $false
+
+    if (
+        $parserState -eq "complete" -and
+        $measurements.Count -gt 0
+    ) {
+
+        $missingSamples = @(
+            $measurements |
+            Where-Object {
+                $_.repetition_count -le 0
+            }
+        )
+
+        $rawRepetitionsPreserved =
+            ($missingSamples.Count -eq 0)
+    }
+
+    Set-ObjectProperty `
+        $run.result `
+        "raw_repetitions_preserved" `
+        $rawRepetitionsPreserved
+
+    $executionAssessment =
+        Get-ExecutionAssessment `
+            -Run $run `
+            -Memory $memory `
+            -ParserState $parserState
+
+    Set-ObjectProperty `
+        $run.result `
+        "execution_assessment" `
+        $executionAssessment
+
+    Set-ObjectProperty `
+        $run.result `
+        "clean_execution" `
+        $executionAssessment.clean_execution
+
     if ($Repair) {
 
         Set-ObjectProperty `
@@ -1047,19 +2581,36 @@ function Update-RunFromFiles {
             (Get-Date).ToString("o")
     }
 
+    Set-ObjectProperty `
+        $run `
+        "updated_at" `
+        (Get-Date).ToString("o")
+
     Write-JsonFile `
         -Object $run `
         -Path $runFile
 
-    return [pscustomobject]@{
-        run          = $run
-        parser_state = $parserState
-        parser_error = $parserError
-        measurements = $measurements
-        memory       = $memory
+    return [pscustomobject][ordered]@{
+
+        run =
+            $run
+
+        parser_state =
+            $parserState
+
+        parser_error =
+            $parserError
+
+        measurements =
+            @($measurements)
+
+        memory =
+            $memory
+
+        execution_assessment =
+            $executionAssessment
     }
 }
-
 
 # ============================================================
 # BUILD LLAMA ARGUMENTS
@@ -1155,17 +2706,27 @@ function Build-LlamaArguments {
     return $args
 }
 
-
 # ============================================================
 # START ASYNC BENCHMARK
 # ============================================================
 
 function Start-Benchmark {
 
+    # --------------------------------------------------------
+    # ENFORCE POST-ARCHITECTURE CONTRACT BEFORE CREATING RUN
+    # --------------------------------------------------------
+
+    $contract =
+        Get-BenchmarkContract `
+            -RequestedExperimentId $ExperimentId
+
+    $runsRoot =
+        Join-Path $Script:BenchRoot "runs"
+
     New-Item `
         -ItemType Directory `
         -Force `
-        -Path (Join-Path $Script:BenchRoot "runs") |
+        -Path $runsRoot |
         Out-Null
 
     $safeName = (
@@ -1178,11 +2739,24 @@ function Start-Benchmark {
         $safeName = "manual"
     }
 
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $timestamp =
+        Get-Date -Format "yyyyMMdd-HHmmss"
 
-    $runDirectory = Join-Path `
-        (Join-Path $Script:BenchRoot "runs") `
-        "$timestamp-llamacpp-$safeName"
+    $shortId =
+        ([guid]::NewGuid().ToString("N")).Substring(0, 8)
+
+    $runId =
+        "run-" +
+        $timestamp +
+        "-" +
+        $safeName +
+        "-" +
+        $shortId
+
+    $runDirectory =
+        Join-Path `
+            $runsRoot `
+            $runId
 
     New-Item `
         -ItemType Directory `
@@ -1190,132 +2764,515 @@ function Start-Benchmark {
         -Path $runDirectory |
         Out-Null
 
-    $statusFile = Join-Path `
-        $runDirectory `
-        "status.json"
+    $statusFile =
+        Join-Path $runDirectory "status.json"
 
-    $runFile = Join-Path `
-        $runDirectory `
-        "run.json"
+    $runFile =
+        Join-Path $runDirectory "run.json"
+
+    $benchFile =
+        Join-Path $runDirectory "bench.json"
+
+    $benchErr =
+        Join-Path $runDirectory "bench-stderr.log"
+
+    $workerOut =
+        Join-Path $runDirectory "worker-out.log"
+
+    $workerErr =
+        Join-Path $runDirectory "worker-err.log"
 
     $systemHash = $null
 
     if (Test-Path $Script:SystemProfile) {
 
-        $systemHash = (
-            Get-FileHash `
-                $Script:SystemProfile `
-                -Algorithm SHA256
-        ).Hash
+        $systemHash =
+            Get-Sha256 $Script:SystemProfile
     }
 
-    $harnessHash = (
-        Get-FileHash `
-            $PSCommandPath `
-            -Algorithm SHA256
-    ).Hash
+    $harnessHash =
+        Get-Sha256 $PSCommandPath
 
     $parameters = [ordered]@{
-        prompt_tokens     = $PromptTokens
-        gen_tokens        = $GenTokens
 
-        repetitions       = $Repetitions
+        prompt_tokens =
+            $PromptTokens
 
-        batch             = $Batch
-        ubatch            = $UBatch
+        gen_tokens =
+            $GenTokens
 
-        threads           = $Threads
-        gpu_layers        = $GpuLayers
-        cpu_moe           = $CpuMoe
+        repetitions =
+            $Repetitions
 
-        cpu_mask          = $CpuMask
-        cpu_strict        = $CpuStrict
-        poll              = $Poll
+        batch =
+            $Batch
 
-        kv_k              = $KvK
-        kv_v              = $KvV
+        ubatch =
+            $UBatch
 
-        flash_attention   = $FlashAttention
+        threads =
+            $Threads
 
-        device            = $Device
-        load_mode         = $LoadMode
+        gpu_layers =
+            $GpuLayers
 
-        no_kv_offload     = $NoKvOffload
-        no_op_offload     = $NoOpOffload
-        no_host           = $NoHost
+        cpu_moe =
+            $CpuMoe
 
-        numa              = $Numa
+        cpu_mask =
+            $CpuMask
 
-        verbose           = [bool]$VerboseBench
+        cpu_strict =
+            $CpuStrict
+
+        poll =
+            $Poll
+
+        kv_k =
+            $KvK
+
+        kv_v =
+            $KvV
+
+        flash_attention =
+            $FlashAttention
+
+        device =
+            $Device
+
+        load_mode =
+            $LoadMode
+
+        no_kv_offload =
+            $NoKvOffload
+
+        no_op_offload =
+            $NoOpOffload
+
+        no_host =
+            $NoHost
+
+        numa =
+            $Numa
+
+        verbose =
+            [bool]$VerboseBench
     }
 
-    $argumentPreview = Build-LlamaArguments `
-        ([pscustomobject]$parameters)
+    $parameterObject =
+        [pscustomobject]$parameters
+
+    $argumentPreview =
+        Build-LlamaArguments `
+            $parameterObject
+
+    $resolvedWorkloadId =
+        Resolve-WorkloadProfile `
+            -Methodology $contract.methodology `
+            -RequestedWorkloadId $WorkloadId `
+            -RequestedPromptTokens $PromptTokens `
+            -RequestedGenTokens $GenTokens
+
+    $sweepMetadata =
+        Get-SweepMetadata `
+            $parameterObject
+
+    $createdAt =
+        (Get-Date).ToString("o")
+
+    $frozenHarnessHash = $null
+
+    if (
+        $contract.methodology.tooling_provenance -and
+        $contract.methodology.tooling_provenance.benchmark_harness
+    ) {
+        $frozenHarnessHash =
+            $contract.methodology.tooling_provenance.benchmark_harness.sha256
+    }
 
     $run = [ordered]@{
 
-        schema = "yuki-llamacpp-benchmark-run-v2"
+        schema =
+            $Script:RunSchema
 
-        created_at = (Get-Date).ToString("o")
+        id =
+            $runId
 
-        name = $safeName
+        created_at =
+            $createdAt
 
-        backend_profile = [ordered]@{
-            id      = $Script:BackendProfileId
-            family  = "llama.cpp"
-            backend = "Vulkan"
+        updated_at =
+            $createdAt
+
+        status =
+            "queued"
+
+        name =
+            $safeName
+
+        references = [ordered]@{
+
+            suite_ref =
+                $contract.suite.id
+
+            methodology_ref =
+                $contract.methodology.id
+
+            methodology_sha256 =
+                $contract.methodology_sha256
+
+            experiment_ref =
+                $contract.experiment.id
+
+            machine_ref =
+                $contract.suite.target.machine_ref
+
+            environment_ref =
+                $contract.suite.target.environment_ref
+
+            host_session_ref =
+                $contract.suite.target.host_session_ref
+
+            backend_ref =
+                $contract.backend.id
+
+            model_ref =
+                $contract.suite.target.model_ref
+
+            model_artifact_ref =
+                $contract.suite.target.model_artifact_ref
         }
 
-        system_profile = [ordered]@{
-            path   = $Script:SystemProfile
-            sha256 = $systemHash
+        provenance = [ordered]@{
+
+            harness = [ordered]@{
+
+                path =
+                    $PSCommandPath
+
+                sha256 =
+                    $harnessHash
+
+                phase0_frozen_harness_sha256 =
+                    $frozenHarnessHash
+
+                enforcement_generation =
+                    "phase0-integrated-v1"
+            }
+
+            methodology = [ordered]@{
+
+                id =
+                    $contract.methodology.id
+
+                path =
+                    $Script:MethodologyFile
+
+                sha256 =
+                    $contract.methodology_sha256
+
+                state =
+                    "frozen"
+            }
+
+            backend = [ordered]@{
+
+                id =
+                    $contract.backend.id
+
+                executable =
+                    $Script:Llama
+
+                executable_sha256 =
+                    $contract.executable_sha256
+
+                commit =
+                    $contract.backend.identity.commit
+
+                build_number =
+                    $contract.backend.identity.build_number
+            }
+
+            model_artifact = [ordered]@{
+
+                id =
+                    $contract.suite.target.model_artifact_ref
+
+                registry_path =
+                    $contract.model_artifact_file
+
+                source_path =
+                    $Script:Model
+
+                size_bytes =
+                    [uint64]$contract.model_artifact.size_bytes
+
+                sha256 =
+                    ([string]$contract.model_artifact.sha256).ToLowerInvariant()
+
+                verification_this_run = [ordered]@{
+
+                    path_checked =
+                        $true
+
+                    size_checked =
+                        $true
+
+                    full_hash_recomputed =
+                        $false
+
+                    reason = (
+                        "Exact artifact hash was frozen in the artifact registry; " +
+                        "5 GiB GGUF is not rehashed before every run."
+                    )
+                }
+            }
+
+            host = [ordered]@{
+
+                current_boot_time_utc =
+                    $contract.current_boot_time_utc
+
+                host_session_record =
+                    $contract.host_session_file
+            }
+
+            system_profile_legacy = [ordered]@{
+
+                path =
+                    $Script:SystemProfile
+
+                sha256 =
+                    $systemHash
+            }
         }
 
-        harness = [ordered]@{
-            path   = $PSCommandPath
-            sha256 = $harnessHash
+        configuration = [ordered]@{
+
+            requested = [ordered]@{
+
+                workload_profile_ref =
+                    $resolvedWorkloadId
+
+                parameters =
+                    $parameters
+
+                exact_arguments =
+                    @($argumentPreview)
+
+                source =
+                    "harness_cli"
+            }
+
+            resolved = [ordered]@{
+
+                state =
+                    "pending"
+
+                measurements =
+                    @()
+            }
+
+            observed = [ordered]@{
+
+                state =
+                    "pending"
+
+                measurements =
+                    @()
+
+                memory =
+                    $null
+            }
         }
 
-        executable = $Script:Llama
-        model      = $Script:Model
+        execution = [ordered]@{
 
-        parameters = $parameters
+            workload_profile_ref =
+                $resolvedWorkloadId
 
-        exact_arguments = $argumentPreview
+            methodology_default_repetitions =
+                $contract.methodology.synthetic_engine.default_repetitions
+
+            repetitions_requested =
+                $Repetitions
+
+            warmup_policy =
+                $contract.methodology.synthetic_engine.warmup
+
+            cache_state =
+                "not_applicable"
+
+            process_reuse =
+                $sweepMetadata
+
+            measurement_count =
+                0
+
+            started_at =
+                $null
+
+            completed_at =
+                $null
+
+            worker_pid =
+                $null
+        }
 
         files = [ordered]@{
-            bench_json = (
-                Join-Path $runDirectory "bench.json"
-            )
 
-            bench_stderr = (
-                Join-Path $runDirectory "bench-stderr.log"
-            )
+            run_json =
+                $runFile
 
-            worker_stdout = (
-                Join-Path $runDirectory "worker-out.log"
-            )
+            status_json =
+                $statusFile
 
-            worker_stderr = (
-                Join-Path $runDirectory "worker-err.log"
-            )
+            bench_json =
+                $benchFile
+
+            bench_stderr =
+                $benchErr
+
+            worker_stdout =
+                $workerOut
+
+            worker_stderr =
+                $workerErr
+
+            brain_restore_error =
+                (
+                    Join-Path `
+                        $runDirectory `
+                        "brain-restore-error.log"
+                )
         }
 
         result = [ordered]@{
-            engine_state    = "queued"
-            engine_exit_code = $null
 
-            parser_state    = "not_run"
-            parser_error    = ""
+            engine_state =
+                "queued"
 
-            wall_seconds    = $null
+            engine_exit_code =
+                $null
 
-            gpu_fallback    = $null
+            parser_state =
+                "not_run"
 
-            measurements    = @()
+            parser_error =
+                ""
 
-            memory          = $null
+            harness_state =
+                "ready"
+
+            harness_error =
+                ""
+
+            process_completed =
+                $false
+
+            bridge_timeout =
+                $null
+
+            wall_seconds =
+                $null
+
+            gpu_fallback =
+                $null
+
+            clean_execution =
+                $null
+
+            raw_repetitions_preserved =
+                $false
+
+            measurements =
+                @()
+
+            memory =
+                $null
+
+            execution_assessment =
+                $null
+
+            termination = [ordered]@{
+
+                category =
+                    $null
+
+                observed_at =
+                    $null
+
+                evidence_state =
+                    "pending"
+
+                root_cause =
+                    "not_assessed"
+
+                notes =
+                    @()
+            }
+
+            brain_restore = [ordered]@{
+
+                state =
+                    "pending"
+
+                error =
+                    ""
+
+                completed_at =
+                    $null
+            }
         }
+
+        # ----------------------------------------------------
+        # LEGACY COMPATIBILITY
+        #
+        # Historical tools can still read these fields while
+        # configuration.requested is authoritative for v3.
+        # ----------------------------------------------------
+
+        backend_profile = [ordered]@{
+
+            id =
+                $Script:BackendProfileId
+
+            family =
+                "llama.cpp"
+
+            backend =
+                "Vulkan"
+        }
+
+        system_profile = [ordered]@{
+
+            path =
+                $Script:SystemProfile
+
+            sha256 =
+                $systemHash
+        }
+
+        harness = [ordered]@{
+
+            path =
+                $PSCommandPath
+
+            sha256 =
+                $harnessHash
+        }
+
+        executable =
+            $Script:Llama
+
+        model =
+            $Script:Model
+
+        parameters =
+            $parameters
+
+        exact_arguments =
+            @($argumentPreview)
     }
 
     Write-JsonFile `
@@ -1326,18 +3283,23 @@ function Start-Benchmark {
         -Path $statusFile `
         -State "queued" `
         -Message "Benchmark queued." `
+        -RunId $runId `
+        -EngineState "queued" `
         -EngineExitCode $null `
-        -ParserState "not_run"
+        -ParserState "not_run" `
+        -HarnessState "ready" `
+        -TerminationCategory "" `
+        -ProcessCompleted $false
 
-    $workerOut = Join-Path `
-        $runDirectory `
-        "worker-out.log"
+    # Link the immutable run identity into its primary
+    # scientific Experiment before the detached worker starts.
+    Set-ExperimentRunReference `
+        -Experiment $contract.experiment `
+        -ExperimentFile $contract.experiment_file `
+        -RunId $runId
 
-    $workerErr = Join-Path `
-        $runDirectory `
-        "worker-err.log"
-
-    $workerHost = $null
+    $workerHost =
+        $null
 
     $workerCandidates = @(
         (Join-Path $PSHOME "pwsh.exe"),
@@ -1348,7 +3310,9 @@ function Start-Benchmark {
 
         if (Test-Path $candidate) {
 
-            $workerHost = $candidate
+            $workerHost =
+                $candidate
+
             break
         }
     }
@@ -1364,29 +3328,100 @@ function Start-Benchmark {
         throw "Could not resolve PowerShell executable for benchmark worker."
     }
 
+    try {
 
-    $process = Start-Process `
-        -FilePath $workerHost `
-        -ArgumentList @(
-            "-NoProfile"
-            "-ExecutionPolicy"
-            "Bypass"
-            "-File"
-            "`"$PSCommandPath`""
-            "worker"
-            "-RunPath"
-            "`"$runDirectory`""
-        ) `
-        -RedirectStandardOutput $workerOut `
-        -RedirectStandardError $workerErr `
-        -PassThru `
-        -WindowStyle Hidden
+        $process =
+            Start-Process `
+                -FilePath $workerHost `
+                -ArgumentList @(
+                    "-NoProfile"
+                    "-ExecutionPolicy"
+                    "Bypass"
+                    "-File"
+                    "`"$PSCommandPath`""
+                    "worker"
+                    "-RunPath"
+                    "`"$runDirectory`""
+                ) `
+                -RedirectStandardOutput $workerOut `
+                -RedirectStandardError $workerErr `
+                -PassThru `
+                -WindowStyle Hidden
+
+        $run =
+            Read-JsonFile $runFile
+
+        $run.execution.worker_pid =
+            $process.Id
+
+        $run.updated_at =
+            (Get-Date).ToString("o")
+
+        Write-JsonFile `
+            -Object $run `
+            -Path $runFile
+    }
+    catch {
+
+        $startError = (
+            $_.Exception.Message +
+            "`n" +
+            $_.ScriptStackTrace
+        )
+
+        $run =
+            Read-JsonFile $runFile
+
+        $run.status =
+            "harness_error"
+
+        $run.updated_at =
+            (Get-Date).ToString("o")
+
+        $run.result.harness_state =
+            "error"
+
+        $run.result.harness_error =
+            $startError
+
+        $run.result.termination.category =
+            "harness_error"
+
+        $run.result.termination.observed_at =
+            (Get-Date).ToString("o")
+
+        $run.result.termination.evidence_state =
+            "confirmed"
+
+        Write-JsonFile `
+            -Object $run `
+            -Path $runFile
+
+        Write-RunStatus `
+            -Path $statusFile `
+            -State "harness_error" `
+            -Message $_.Exception.Message `
+            -RunId $runId `
+            -EngineState "not_started" `
+            -EngineExitCode $null `
+            -ParserState "not_run" `
+            -HarnessState "error" `
+            -HarnessError $startError `
+            -TerminationCategory "harness_error" `
+            -ProcessCompleted $false
+
+        throw
+    }
 
     Write-Host ""
     Write-Host "============================================================"
     Write-Host "YUKI LLAMA.CPP BENCHMARK STARTED"
     Write-Host "============================================================"
+    Write-Host "Run ID:     $runId"
     Write-Host "Runner PID: $($process.Id)"
+    Write-Host "Experiment: $($contract.experiment.id)"
+    Write-Host "Methodology:$($contract.methodology.id)"
+    Write-Host "Workload:   $resolvedWorkloadId"
     Write-Host "Run:        $runDirectory"
     Write-Host "Status:     $statusFile"
     Write-Host ""
@@ -1394,7 +3429,6 @@ function Start-Benchmark {
     Write-Host "GPT-Bridge does not need to wait for completion."
     Write-Host "============================================================"
 }
-
 
 # ============================================================
 # BENCHMARK WORKER
@@ -1406,35 +3440,76 @@ function Invoke-BenchmarkWorker {
         throw "worker requires -RunPath"
     }
 
-    $runDirectory = Resolve-RunPath $RunPath
+    $runDirectory =
+        Resolve-RunPath $RunPath
 
-    $runFile = Join-Path `
-        $runDirectory `
-        "run.json"
+    $runFile =
+        Join-Path $runDirectory "run.json"
 
-    $statusFile = Join-Path `
-        $runDirectory `
-        "status.json"
+    $statusFile =
+        Join-Path $runDirectory "status.json"
 
-    $benchFile = Join-Path `
-        $runDirectory `
-        "bench.json"
+    $benchFile =
+        Join-Path $runDirectory "bench.json"
 
-    $benchErr = Join-Path `
-        $runDirectory `
-        "bench-stderr.log"
+    $benchErr =
+        Join-Path $runDirectory "bench-stderr.log"
 
-    $run = Read-JsonFile $runFile
+    $run =
+        Read-JsonFile $runFile
 
-    $brain = $null
+    if (
+        $run.schema -ne
+        $Script:RunSchema
+    ) {
+        throw (
+            "worker only launches post-architecture v3 runs. " +
+            "Legacy runs remain available through show/repair."
+        )
+    }
 
-    $engineExitCode = $null
-    $engineState = "not_started"
+    $runId =
+        [string]$run.id
 
-    $parserState = "not_run"
-    $parserError = ""
+    # Revalidate the frozen contract inside the detached worker.
+    $contract =
+        Get-BenchmarkContract `
+            -RequestedExperimentId $run.references.experiment_ref
 
-    $wallSeconds = $null
+    if (
+        $run.references.methodology_sha256 -ne
+        $contract.methodology_sha256
+    ) {
+        throw "Run methodology hash differs from the frozen contract."
+    }
+
+    if (
+        $run.references.host_session_ref -ne
+        $contract.suite.target.host_session_ref
+    ) {
+        throw "Run host-session reference differs from the current suite binding."
+    }
+
+    $brain =
+        $null
+
+    $brainWasRunning =
+        $false
+
+    $engineExitCode =
+        $null
+
+    $engineState =
+        "not_started"
+
+    $parserState =
+        "not_run"
+
+    $parserError =
+        ""
+
+    $wallSeconds =
+        $null
 
     try {
 
@@ -1442,10 +3517,16 @@ function Invoke-BenchmarkWorker {
             -Path $statusFile `
             -State "preparing" `
             -Message "Stopping YUKI Brain." `
+            -RunId $runId `
+            -EngineState "not_started" `
             -EngineExitCode $null `
-            -ParserState "not_run"
+            -ParserState "not_run" `
+            -HarnessState "running" `
+            -TerminationCategory "" `
+            -ProcessCompleted $false
 
-        $brain = Get-CimInstance Win32_Process |
+        $brain =
+            Get-CimInstance Win32_Process |
             Where-Object {
                 $_.ExecutablePath -and
                 $_.ExecutablePath -ieq $Script:Llama -and
@@ -1457,7 +3538,10 @@ function Invoke-BenchmarkWorker {
             } |
             Select-Object -First 1
 
-        if ($brain) {
+        $brainWasRunning =
+            ($null -ne $brain)
+
+        if ($brainWasRunning) {
 
             Stop-Process `
                 -Id $brain.ProcessId `
@@ -1466,48 +3550,88 @@ function Invoke-BenchmarkWorker {
             Start-Sleep 2
         }
 
-        Write-RunStatus `
-            -Path $statusFile `
-            -State "benchmark_running" `
-            -Message "llama-bench is running." `
-            -EngineExitCode $null `
-            -ParserState "not_run"
+        $run =
+            Read-JsonFile $runFile
+
+        $run.status =
+            "benchmark_running"
+
+        $run.updated_at =
+            (Get-Date).ToString("o")
+
+        $run.execution.started_at =
+            (Get-Date).ToString("o")
+
+        $run.execution.worker_pid =
+            $PID
 
         Set-ObjectProperty `
-            $run.result `
-            "engine_state" `
+            $run.execution `
+            "brain_was_running_before" `
+            $brainWasRunning
+
+        $run.result.engine_state =
+            "running"
+
+        $run.result.harness_state =
             "running"
 
         Write-JsonFile `
             -Object $run `
             -Path $runFile
 
-        $arguments = Build-LlamaArguments `
-            $run.parameters
+        Write-RunStatus `
+            -Path $statusFile `
+            -State "benchmark_running" `
+            -Message "llama-bench is running." `
+            -RunId $runId `
+            -EngineState "running" `
+            -EngineExitCode $null `
+            -ParserState "not_run" `
+            -HarnessState "running" `
+            -TerminationCategory "" `
+            -ProcessCompleted $false
 
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $arguments =
+            Build-LlamaArguments `
+                $run.parameters
+
+        $sw =
+            [System.Diagnostics.Stopwatch]::StartNew()
 
         # Non-zero llama.cpp exit codes are captured through
-        # LASTEXITCODE. They do not become parser errors.
-        $oldPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
+        # LASTEXITCODE and remain separate from parser/harness
+        # failures.
+        $oldPreference =
+            $ErrorActionPreference
 
-        & $Script:Llama @arguments `
-            2> $benchErr |
-            Set-Content `
-                -Path $benchFile `
-                -Encoding UTF8
+        try {
 
-        $engineExitCode = $LASTEXITCODE
+            $ErrorActionPreference =
+                "Continue"
 
-        $ErrorActionPreference = $oldPreference
+            & $Script:Llama @arguments `
+                2> $benchErr |
+                Set-Content `
+                    -Path $benchFile `
+                    -Encoding UTF8
+
+            $engineExitCode =
+                $LASTEXITCODE
+        }
+        finally {
+
+            $ErrorActionPreference =
+                $oldPreference
+        }
 
         $sw.Stop()
 
-        $wallSeconds = [math]::Round(
-            $sw.Elapsed.TotalSeconds,
-            3
-        )
+        $wallSeconds =
+            [math]::Round(
+                $sw.Elapsed.TotalSeconds,
+                3
+            )
 
         if ($engineExitCode -eq 0) {
             $engineState = "complete"
@@ -1516,25 +3640,52 @@ function Invoke-BenchmarkWorker {
             $engineState = "failed"
         }
 
-        Set-ObjectProperty `
-            $run.result `
-            "engine_state" `
+        $run =
+            Read-JsonFile $runFile
+
+        $run.updated_at =
+            (Get-Date).ToString("o")
+
+        $run.execution.completed_at =
+            (Get-Date).ToString("o")
+
+        $run.result.engine_state =
             $engineState
 
-        Set-ObjectProperty `
-            $run.result `
-            "engine_exit_code" `
+        $run.result.engine_exit_code =
             $engineExitCode
 
-        Set-ObjectProperty `
-            $run.result `
-            "wall_seconds" `
+        $run.result.process_completed =
+            $true
+
+        $run.result.wall_seconds =
             $wallSeconds
+
+        $run.result.termination.category =
+            if ($engineExitCode -eq 0) {
+                "normal"
+            }
+            else {
+                "engine_error"
+            }
+
+        $run.result.termination.observed_at =
+            (Get-Date).ToString("o")
+
+        $run.result.termination.evidence_state =
+            "confirmed"
+
+        $run.result.termination.root_cause =
+            if ($engineExitCode -eq 0) {
+                "not_applicable"
+            }
+            else {
+                "backend_nonzero_exit"
+            }
 
         Write-JsonFile `
             -Object $run `
             -Path $runFile
-
 
         # ----------------------------------------------------
         # PARSE ONLY AFTER ENGINE COMPLETION
@@ -1542,48 +3693,37 @@ function Invoke-BenchmarkWorker {
 
         if ($engineExitCode -eq 0) {
 
-            try {
-
-                $parsed = Update-RunFromFiles `
+            $parsed =
+                Update-RunFromFiles `
                     -RunDirectory $runDirectory
 
-                $parserState = $parsed.parser_state
-                $parserError = $parsed.parser_error
-            }
-            catch {
+            $parserState =
+                $parsed.parser_state
 
-                $parserState = "parser_error"
-
-                $parserError = (
-                    $_.Exception.Message +
-                    "`n" +
-                    $_.ScriptStackTrace
-                )
-
-                $run = Read-JsonFile $runFile
-
-                Set-ObjectProperty `
-                    $run.result `
-                    "parser_state" `
-                    $parserState
-
-                Set-ObjectProperty `
-                    $run.result `
-                    "parser_error" `
-                    $parserError
-
-                Write-JsonFile `
-                    -Object $run `
-                    -Path $runFile
-            }
+            $parserError =
+                $parsed.parser_error
         }
 
+        $run =
+            Read-JsonFile $runFile
 
-        # ----------------------------------------------------
-        # FINAL STATUS
-        # ----------------------------------------------------
+        $run.result.harness_state =
+            "complete"
+
+        $run.result.harness_error =
+            ""
 
         if ($engineExitCode -ne 0) {
+
+            $run.status =
+                "benchmark_failed"
+
+            $run.result.parser_state =
+                "not_run"
+
+            Write-JsonFile `
+                -Object $run `
+                -Path $runFile
 
             Write-RunStatus `
                 -Path $statusFile `
@@ -1592,26 +3732,52 @@ function Invoke-BenchmarkWorker {
                     "llama-bench exited with code " +
                     $engineExitCode
                 ) `
+                -RunId $runId `
+                -EngineState "failed" `
                 -EngineExitCode $engineExitCode `
-                -ParserState "not_run"
+                -ParserState "not_run" `
+                -HarnessState "complete" `
+                -TerminationCategory "engine_error" `
+                -ProcessCompleted $true
         }
         elseif ($parserState -eq "complete") {
+
+            $run.status =
+                "benchmark_complete"
+
+            Write-JsonFile `
+                -Object $run `
+                -Path $runFile
 
             Write-RunStatus `
                 -Path $statusFile `
                 -State "benchmark_complete" `
-                -Message (
-                    "Engine complete; parser complete."
-                ) `
+                -Message "Engine complete; parser complete." `
+                -RunId $runId `
+                -EngineState "complete" `
                 -EngineExitCode 0 `
-                -ParserState "complete"
+                -ParserState "complete" `
+                -HarnessState "complete" `
+                -TerminationCategory "normal" `
+                -ProcessCompleted $true
         }
         else {
 
-            # CRITICAL DESIGN:
-            #
-            # A successful GPU benchmark is NOT marked failed
-            # because the metadata parser had an issue.
+            # A successful benchmark remains a successful engine
+            # run even if normalization/parsing fails.
+            $run.status =
+                "benchmark_complete"
+
+            $run.result.parser_state =
+                "parser_error"
+
+            $run.result.parser_error =
+                $parserError
+
+            Write-JsonFile `
+                -Object $run `
+                -Path $runFile
+
             Write-RunStatus `
                 -Path $statusFile `
                 -State "benchmark_complete" `
@@ -1619,9 +3785,14 @@ function Invoke-BenchmarkWorker {
                     "Engine complete; parser error. " +
                     "Raw benchmark data is preserved."
                 ) `
+                -RunId $runId `
+                -EngineState "complete" `
                 -EngineExitCode 0 `
                 -ParserState "parser_error" `
-                -ParserError $parserError
+                -ParserError $parserError `
+                -HarnessState "complete" `
+                -TerminationCategory "normal" `
+                -ProcessCompleted $true
         }
     }
     catch {
@@ -1634,34 +3805,71 @@ function Invoke-BenchmarkWorker {
 
         try {
 
-            $run = Read-JsonFile $runFile
+            $run =
+                Read-JsonFile $runFile
 
-            Set-ObjectProperty `
-                $run.result `
-                "engine_state" `
+            $run.status =
                 "harness_error"
 
-            Set-ObjectProperty `
-                $run.result `
-                "harness_error" `
+            $run.updated_at =
+                (Get-Date).ToString("o")
+
+            $run.result.harness_state =
+                "error"
+
+            $run.result.harness_error =
                 $fatalError
+
+            if (
+                -not
+                $run.result.termination.category
+            ) {
+
+                $run.result.termination.category =
+                    "harness_error"
+
+                $run.result.termination.observed_at =
+                    (Get-Date).ToString("o")
+
+                $run.result.termination.evidence_state =
+                    "confirmed"
+
+                $run.result.termination.root_cause =
+                    "harness_exception"
+            }
 
             Write-JsonFile `
                 -Object $run `
                 -Path $runFile
         }
         catch {
+            # The original harness exception is preserved in
+            # status.json even if run.json itself cannot be updated.
         }
 
         Write-RunStatus `
             -Path $statusFile `
             -State "harness_error" `
             -Message $_.Exception.Message `
+            -RunId $runId `
+            -EngineState $engineState `
             -EngineExitCode $engineExitCode `
             -ParserState $parserState `
-            -ParserError $parserError
+            -ParserError $parserError `
+            -HarnessState "error" `
+            -HarnessError $fatalError `
+            -TerminationCategory "harness_error" `
+            -ProcessCompleted (
+                $null -ne $engineExitCode
+            )
     }
     finally {
+
+        $restoreState =
+            "complete"
+
+        $restoreError =
+            ""
 
         try {
 
@@ -1673,19 +3881,70 @@ function Invoke-BenchmarkWorker {
         }
         catch {
 
-            $restoreLog = Join-Path `
-                $runDirectory `
-                "brain-restore-error.log"
+            $restoreState =
+                "failed"
 
-            $_ |
-                Out-String |
+            $restoreError = (
+                $_.Exception.Message +
+                "`n" +
+                $_.ScriptStackTrace
+            )
+
+            $restoreLog =
+                Join-Path `
+                    $runDirectory `
+                    "brain-restore-error.log"
+
+            $restoreError |
                 Set-Content `
                     $restoreLog `
                     -Encoding UTF8
         }
+
+        try {
+
+            $run =
+                Read-JsonFile $runFile
+
+            if (
+                -not
+                $run.result.PSObject.Properties["brain_restore"]
+            ) {
+
+                Set-ObjectProperty `
+                    $run.result `
+                    "brain_restore" `
+                    ([pscustomobject]@{})
+            }
+
+            Set-ObjectProperty `
+                $run.result.brain_restore `
+                "state" `
+                $restoreState
+
+            Set-ObjectProperty `
+                $run.result.brain_restore `
+                "error" `
+                $restoreError
+
+            Set-ObjectProperty `
+                $run.result.brain_restore `
+                "completed_at" `
+                (Get-Date).ToString("o")
+
+            $run.updated_at =
+                (Get-Date).ToString("o")
+
+            Write-JsonFile `
+                -Object $run `
+                -Path $runFile
+        }
+        catch {
+            # Preserve benchmark evidence even if restoration
+            # metadata itself cannot be written.
+        }
     }
 }
-
 
 # ============================================================
 # STATUS COMMAND
@@ -1693,11 +3952,13 @@ function Invoke-BenchmarkWorker {
 
 function Show-Status {
 
-    $runDirectory = Resolve-RunPath $RunPath
+    $runDirectory =
+        Resolve-RunPath $RunPath
 
-    $statusFile = Join-Path `
-        $runDirectory `
-        "status.json"
+    $statusFile =
+        Join-Path `
+            $runDirectory `
+            "status.json"
 
     Write-Host ""
     Write-Host "============================================================"
@@ -1707,15 +3968,30 @@ function Show-Status {
     Write-Host ""
 
     if (Test-Path $statusFile) {
-        Get-Content $statusFile
+
+        try {
+
+            $status =
+                Read-JsonFile $statusFile
+
+            $status |
+                Format-List
+        }
+        catch {
+
+            Write-Host "status.json could not be parsed." `
+                -ForegroundColor Yellow
+
+            Get-Content $statusFile
+        }
     }
     else {
+
         Write-Host "status.json not found."
     }
 
     Write-Host "============================================================"
 }
-
 
 # ============================================================
 # SHOW COMMAND
@@ -1723,59 +3999,122 @@ function Show-Status {
 
 function Show-Run {
 
-    $runDirectory = Resolve-RunPath $RunPath
+    $runDirectory =
+        Resolve-RunPath $RunPath
 
-    $runFile = Join-Path `
-        $runDirectory `
-        "run.json"
+    $runFile =
+        Join-Path `
+            $runDirectory `
+            "run.json"
 
-    $statusFile = Join-Path `
-        $runDirectory `
-        "status.json"
+    $statusFile =
+        Join-Path `
+            $runDirectory `
+            "status.json"
 
-    $run = Read-JsonFile $runFile
+    $run =
+        Read-JsonFile $runFile
 
     Write-Host ""
     Write-Host "============================================================"
     Write-Host "YUKI LLAMA.CPP BENCHMARK RESULT"
     Write-Host "============================================================"
     Write-Host "Run: $runDirectory"
-    Write-Host ""
+    Write-Host "Schema: $($run.schema)"
+
+    if ($run.PSObject.Properties["id"]) {
+        Write-Host "Run ID: $($run.id)"
+    }
+
+    if (
+        $run.PSObject.Properties["references"]
+    ) {
+
+        Write-Host ""
+        Write-Host "=== REPRODUCIBILITY ===" `
+            -ForegroundColor Cyan
+
+        $run.references |
+            Select-Object `
+                experiment_ref,
+                suite_ref,
+                methodology_ref,
+                methodology_sha256,
+                machine_ref,
+                environment_ref,
+                host_session_ref,
+                backend_ref,
+                model_ref,
+                model_artifact_ref |
+            Format-List
+    }
 
     if (Test-Path $statusFile) {
 
-        $status = Read-JsonFile $statusFile
+        try {
 
-        Write-Host "State:        $($status.state)"
-        Write-Host "Parser:       $($status.parser_state)"
-        Write-Host "Engine exit:  $($status.engine_exit_code)"
-
-        if ($status.parser_error) {
+            $status =
+                Read-JsonFile $statusFile
 
             Write-Host ""
-            Write-Host "Parser error:" -ForegroundColor Yellow
-            Write-Host $status.parser_error
+            Write-Host "=== STATUS ===" `
+                -ForegroundColor Cyan
+
+            Write-Host "State:        $($status.state)"
+            Write-Host "Engine:       $($status.engine_state)"
+            Write-Host "Engine exit:  $($status.engine_exit_code)"
+            Write-Host "Parser:       $($status.parser_state)"
+            Write-Host "Harness:      $($status.harness_state)"
+            Write-Host "Termination:  $($status.termination_category)"
+            Write-Host "Completed:    $($status.process_completed)"
+
+            if ($status.parser_error) {
+
+                Write-Host ""
+                Write-Host "Parser error:" `
+                    -ForegroundColor Yellow
+
+                Write-Host $status.parser_error
+            }
+
+            if ($status.harness_error) {
+
+                Write-Host ""
+                Write-Host "Harness error:" `
+                    -ForegroundColor Red
+
+                Write-Host $status.harness_error
+            }
+        }
+        catch {
+
+            Write-Host ""
+            Write-Host "status.json parse error." `
+                -ForegroundColor Yellow
         }
     }
 
     Write-Host ""
-    Write-Host "=== MEASUREMENTS ===" -ForegroundColor Cyan
+    Write-Host "=== MEASUREMENTS ===" `
+        -ForegroundColor Cyan
 
-    $measurements = @()
+    $measurements =
+        @()
 
     if (
         $run.result -and
         $run.result.PSObject.Properties["measurements"]
     ) {
-        $measurements = @(
-            $run.result.measurements
-        )
+        $measurements =
+            @($run.result.measurements)
     }
 
     if ($measurements.Count -gt 0) {
 
         $measurements |
             Select-Object `
+                measurement_id,
+                order_index,
                 kind,
                 n_prompt,
                 n_gen,
@@ -1799,7 +4138,8 @@ function Show-Run {
     ) {
 
         Write-Host ""
-        Write-Host "=== MEMORY ===" -ForegroundColor Cyan
+        Write-Host "=== MEMORY ===" `
+            -ForegroundColor Cyan
 
         $run.result.memory |
             Select-Object `
@@ -1809,18 +4149,76 @@ function Show-Run {
                 total_layers,
                 gpu_model_mib,
                 gpu_kv_mib,
+                host_kv_mib,
                 gpu_recurrent_mib,
                 gpu_compute_mib,
                 host_compute_mib,
                 pinned_memory_failure,
                 allocation_failure,
-                gpu_fallback |
+                gpu_fallback,
+                partial_offload |
+            Format-List
+
+        if (
+            $run.result.memory.PSObject.Properties["linkage"]
+        ) {
+
+            Write-Host "Memory linkage:"
+
+            $run.result.memory.linkage |
+                Format-List
+        }
+    }
+
+    if (
+        $run.result -and
+        $run.result.PSObject.Properties[
+            "execution_assessment"
+        ] -and
+        $run.result.execution_assessment
+    ) {
+
+        Write-Host ""
+        Write-Host "=== EXECUTION ASSESSMENT ===" `
+            -ForegroundColor Cyan
+
+        $run.result.execution_assessment |
+            Format-List
+    }
+
+    if (
+        $run.result -and
+        $run.result.PSObject.Properties[
+            "termination"
+        ] -and
+        $run.result.termination
+    ) {
+
+        Write-Host ""
+        Write-Host "=== TERMINATION ===" `
+            -ForegroundColor Cyan
+
+        $run.result.termination |
+            Format-List
+    }
+
+    if (
+        $run.execution -and
+        $run.execution.PSObject.Properties[
+            "process_reuse"
+        ]
+    ) {
+
+        Write-Host ""
+        Write-Host "=== PROCESS / ORDER ===" `
+            -ForegroundColor Cyan
+
+        $run.execution.process_reuse |
             Format-List
     }
 
     Write-Host "============================================================"
 }
-
 
 # ============================================================
 # LIST COMMAND
@@ -1828,9 +4226,10 @@ function Show-Run {
 
 function Show-RunList {
 
-    $runsPath = Join-Path `
-        $Script:BenchRoot `
-        "runs"
+    $runsPath =
+        Join-Path `
+            $Script:BenchRoot `
+            "runs"
 
     Write-Host ""
     Write-Host "============================================================"
@@ -1853,36 +4252,102 @@ function Show-RunList {
         )
     ) {
 
-        $statusFile = Join-Path `
-            $dir.FullName `
-            "status.json"
+        $statusFile =
+            Join-Path `
+                $dir.FullName `
+                "status.json"
+
+        $runFile =
+            Join-Path `
+                $dir.FullName `
+                "run.json"
 
         $state = ""
         $parser = ""
         $message = ""
+        $runId = ""
+        $experiment = ""
+        $schema = ""
 
         if (Test-Path $statusFile) {
 
             try {
 
-                $status = Read-JsonFile $statusFile
+                $status =
+                    Read-JsonFile $statusFile
 
-                $state = $status.state
-                $parser = $status.parser_state
-                $message = $status.message
+                $state =
+                    $status.state
+
+                $parser =
+                    $status.parser_state
+
+                $message =
+                    $status.message
+
+                if ($status.PSObject.Properties["run_id"]) {
+                    $runId = $status.run_id
+                }
             }
             catch {
 
-                $state = "status_parse_error"
+                $state =
+                    "status_parse_error"
             }
         }
 
-        $items += [pscustomobject]@{
-            run     = $dir.Name
-            state   = $state
-            parser  = $parser
-            message = $message
+        if (Test-Path $runFile) {
+
+            try {
+
+                $run =
+                    Read-JsonFile $runFile
+
+                $schema =
+                    $run.schema
+
+                if (
+                    -not $runId -and
+                    $run.PSObject.Properties["id"]
+                ) {
+                    $runId = $run.id
+                }
+
+                if (
+                    $run.PSObject.Properties["references"]
+                ) {
+                    $experiment =
+                        $run.references.experiment_ref
+                }
+            }
+            catch {
+            }
         }
+
+        $items +=
+            [pscustomobject][ordered]@{
+
+                run =
+                    $dir.Name
+
+                run_id =
+                    $runId
+
+                experiment =
+                    $experiment
+
+                schema =
+                    $schema
+
+                state =
+                    $state
+
+                parser =
+                    $parser
+
+                message =
+                    $message
+            }
     }
 
     $items |
@@ -1891,14 +4356,14 @@ function Show-RunList {
     Write-Host "============================================================"
 }
 
-
 # ============================================================
 # REPAIR COMMAND
 # ============================================================
 
 function Repair-Run {
 
-    $runDirectory = Resolve-RunPath $RunPath
+    $runDirectory =
+        Resolve-RunPath $RunPath
 
     Write-Host ""
     Write-Host "============================================================"
@@ -1907,24 +4372,142 @@ function Repair-Run {
     Write-Host "Run: $runDirectory"
     Write-Host ""
 
-    $parsed = Update-RunFromFiles `
-        -RunDirectory $runDirectory `
-        -Repair
+    $parsed =
+        Update-RunFromFiles `
+            -RunDirectory $runDirectory `
+            -Repair
 
-    $statusFile = Join-Path `
-        $runDirectory `
-        "status.json"
+    $run =
+        Read-JsonFile (
+            Join-Path `
+                $runDirectory `
+                "run.json"
+        )
 
-    if ($parsed.parser_state -eq "complete") {
+    $statusFile =
+        Join-Path `
+            $runDirectory `
+            "status.json"
+
+    $runId = ""
+
+    if ($run.PSObject.Properties["id"]) {
+        $runId = [string]$run.id
+    }
+
+    $engineState =
+        [string]$run.result.engine_state
+
+    $engineExitCode =
+        $run.result.engine_exit_code
+
+    $terminationCategory = ""
+
+    if (
+        $run.result.PSObject.Properties["termination"] -and
+        $run.result.termination
+    ) {
+        $terminationCategory =
+            [string]$run.result.termination.category
+    }
+
+    # --------------------------------------------------------
+    # DO NOT TURN INTERRUPTED LEGACY RUNS INTO "COMPLETE"
+    # JUST BECAUSE repair WAS INVOKED.
+    # --------------------------------------------------------
+
+    $knownInterruption = (
+        $terminationCategory -in @(
+            "host_bugcheck",
+            "host_reboot",
+            "power_loss",
+            "host_hang",
+            "manual_cancel",
+            "process_crash",
+            "unknown_interruption"
+        )
+    )
+
+    $engineCompletionUnknown = (
+        $engineState -in @(
+            "",
+            "queued",
+            "running",
+            "not_started"
+        )
+    )
+
+    if (
+        $knownInterruption -or
+        $engineCompletionUnknown
+    ) {
+
+        $statusState =
+            "interrupted"
+
+        if (-not $terminationCategory) {
+            $terminationCategory =
+                "unknown_interruption"
+        }
+
+        Write-RunStatus `
+            -Path $statusFile `
+            -State $statusState `
+            -Message (
+                "Run reparsed where possible; engine completion " +
+                "remains interrupted or unknown."
+            ) `
+            -RunId $runId `
+            -EngineState $engineState `
+            -EngineExitCode $engineExitCode `
+            -ParserState $parsed.parser_state `
+            -ParserError $parsed.parser_error `
+            -HarnessState "repair_complete" `
+            -TerminationCategory $terminationCategory `
+            -ProcessCompleted $false
+    }
+    elseif (
+        $engineState -eq "failed" -or
+        (
+            $null -ne $engineExitCode -and
+            [int]$engineExitCode -ne 0
+        )
+    ) {
+
+        Write-RunStatus `
+            -Path $statusFile `
+            -State "benchmark_failed" `
+            -Message "Existing failed benchmark reparsed where possible." `
+            -RunId $runId `
+            -EngineState "failed" `
+            -EngineExitCode $engineExitCode `
+            -ParserState $parsed.parser_state `
+            -ParserError $parsed.parser_error `
+            -HarnessState "repair_complete" `
+            -TerminationCategory "engine_error" `
+            -ProcessCompleted $true
+    }
+    elseif ($parsed.parser_state -eq "complete") {
+
+        $finalTerminationCategory =
+            if ($terminationCategory) {
+                $terminationCategory
+            }
+            else {
+                "normal"
+            }
 
         Write-RunStatus `
             -Path $statusFile `
             -State "benchmark_complete" `
-            -Message (
-                "Existing benchmark reparsed successfully."
-            ) `
+            -Message "Existing benchmark reparsed successfully." `
+            -RunId $runId `
+            -EngineState "complete" `
             -EngineExitCode 0 `
-            -ParserState "complete"
+            -ParserState "complete" `
+            -HarnessState "repair_complete" `
+            -TerminationCategory $finalTerminationCategory `
+            -ProcessCompleted $true
 
         Write-Host "Parser: COMPLETE" `
             -ForegroundColor Green
@@ -1933,6 +4516,7 @@ function Repair-Run {
 
         $parsed.measurements |
             Select-Object `
+                measurement_id,
                 kind,
                 n_prompt,
                 n_gen,
@@ -1946,15 +4530,28 @@ function Repair-Run {
     }
     else {
 
+        $finalTerminationCategory =
+            if ($terminationCategory) {
+                $terminationCategory
+            }
+            else {
+                "normal"
+            }
+
         Write-RunStatus `
             -Path $statusFile `
             -State "benchmark_complete" `
             -Message (
-                "Raw benchmark exists; parser still has an error."
+                "Engine completion is preserved; parser still has an error."
             ) `
+            -RunId $runId `
+            -EngineState "complete" `
             -EngineExitCode 0 `
             -ParserState "parser_error" `
-            -ParserError $parsed.parser_error
+            -ParserError $parsed.parser_error `
+            -HarnessState "repair_complete" `
+            -TerminationCategory $finalTerminationCategory `
+            -ProcessCompleted $true
 
         Write-Host "Parser: ERROR" `
             -ForegroundColor Yellow
@@ -1965,7 +4562,6 @@ function Repair-Run {
     Write-Host ""
     Write-Host "============================================================"
 }
-
 
 # ============================================================
 # COMMAND ROUTER
@@ -2019,5 +4615,3 @@ switch ($Command.ToLowerInvariant()) {
         exit 1
     }
 }
-
-
