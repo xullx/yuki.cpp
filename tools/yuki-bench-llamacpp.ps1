@@ -550,7 +550,24 @@ function Get-BenchmarkContract {
         "$Script:BenchRoot\registry\host-sessions\$($suite.target.host_session_ref)" `
         "host-session.json"
 
-    $hostSession = Read-JsonFile $hostSessionFile
+    # Read both the parsed object and the raw JSON text.
+    #
+    # PowerShell 7 can automatically deserialize ISO-8601 JSON date
+    # strings into System.DateTime. Casting that DateTime back to
+    # [string] discards the original trailing Z/offset. On a non-UTC
+    # host, reparsing that culture-formatted string as DateTimeOffset
+    # can shift the instant by the local UTC offset and falsely classify
+    # the current boot as a different host session.
+    #
+    # The raw JSON token is authoritative for boot-session identity.
+    $hostSessionRaw =
+        Get-Content `
+            -Path $hostSessionFile `
+            -Raw
+
+    $hostSession =
+        $hostSessionRaw |
+        ConvertFrom-Json
 
     $os = Get-CimInstance Win32_OperatingSystem
 
@@ -563,14 +580,31 @@ function Get-BenchmarkContract {
 
     try {
 
+        $bootTokenMatch =
+            [regex]::Match(
+                $hostSessionRaw,
+                '"boot_time_utc"\s*:\s*"([^"]+)"'
+            )
+
+        if (-not $bootTokenMatch.Success) {
+            throw "boot_time_utc JSON token not found."
+        }
+
+        $recordedBootToken =
+            $bootTokenMatch.Groups[1].Value
+
         $recordedBootUtc =
             [datetimeoffset]::Parse(
-                [string]$hostSession.boot_time_utc
+                $recordedBootToken,
+                [System.Globalization.CultureInfo]::InvariantCulture
             ).UtcDateTime
     }
     catch {
 
-        throw "Host-session record contains an invalid boot_time_utc."
+        throw (
+            "Host-session record contains an invalid boot_time_utc. " +
+            $_.Exception.Message
+        )
     }
 
     $bootDifferenceSeconds =
