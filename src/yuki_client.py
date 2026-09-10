@@ -14,6 +14,7 @@
 import argparse
 import base64
 import io
+import json
 import os
 import shutil
 import struct
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from queue import Queue
 
 import numpy as np
@@ -50,6 +52,38 @@ def suppress_stderr():
         os.close(old_stderr)
 
 
+VISUALIZER_ACTIVITY_URL = os.environ.get(
+    "YUKI_VISUALIZER_ACTIVITY_URL",
+    "http://127.0.0.1:8085/api/activity",
+)
+
+
+def _post_visualizer_activity(payload):
+    """
+    Best-effort local visualizer telemetry.
+    Visualizer failure must never affect audio playback.
+    """
+    try:
+        data = json.dumps(payload).encode("utf-8")
+
+        request = urllib.request.Request(
+            VISUALIZER_ACTIVITY_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=0.05,
+        ):
+            pass
+
+    except Exception:
+        pass
+
 class AudioPlayer:
     """Streams audio samples to speakers via PyAudio (non-blocking)."""
 
@@ -62,6 +96,74 @@ class AudioPlayer:
         self.thread = None
         self.running = False
         self.started = False
+        self.visualizer_level = 0.0
+        self.visualizer_level_lock = threading.Lock()
+        self.visualizer_running = False
+        self.visualizer_thread = None
+
+    def _set_visualizer_level(self, value):
+        value = max(
+            0.0,
+            min(1.0, float(value)),
+        )
+
+        with self.visualizer_level_lock:
+            self.visualizer_level = value
+
+
+    def _update_visualizer_from_pcm(self, pcm_data):
+        if not pcm_data:
+            self._set_visualizer_level(0.0)
+            return
+
+        samples = np.frombuffer(
+            pcm_data,
+            dtype=np.int16,
+        ).astype(np.float32)
+
+        if samples.size == 0:
+            self._set_visualizer_level(0.0)
+            return
+
+        samples /= 32768.0
+
+        rms = float(
+            np.sqrt(
+                np.mean(samples * samples)
+            )
+        )
+
+        # Compress typical speech RMS into a visible 0..1 range.
+        level = min(
+            1.0,
+            max(
+                0.0,
+                (rms / 0.12) ** 0.65,
+            ),
+        )
+
+        self._set_visualizer_level(level)
+
+
+    def _visualizer_loop(self):
+        while self.visualizer_running:
+
+            with self.visualizer_level_lock:
+                level = self.visualizer_level
+
+            _post_visualizer_activity(
+                {
+                    "voice_level": level,
+                }
+            )
+
+            time.sleep(0.04)
+
+        _post_visualizer_activity(
+            {
+                "voice_level": 0.0,
+            }
+        )
 
     def _playback_thread(self):
         """Background thread that writes audio to the stream."""
@@ -69,6 +171,9 @@ class AudioPlayer:
             try:
                 pcm_data = self.queue.get(timeout=0.1)
                 if self.stream:
+                    self._update_visualizer_from_pcm(
+                        pcm_data
+                    )
                     self.stream.write(pcm_data)
             except:
                 pass
@@ -78,6 +183,17 @@ class AudioPlayer:
         self.all_samples = []
         self.running = True
         self.started = False
+
+        self._set_visualizer_level(0.0)
+
+        self.visualizer_running = True
+
+        self.visualizer_thread = threading.Thread(
+            target=self._visualizer_loop,
+            daemon=True,
+        )
+
+        self.visualizer_thread.start()
 
     def _start_stream(self):
         """Actually start the audio stream (called when sample rate is known)."""
@@ -107,17 +223,29 @@ class AudioPlayer:
     def stop(self, output_file="output.wav"):
         """Stop the audio stream."""
         self.running = False
+
         if self.thread:
             self.thread.join()
             self.thread = None
+
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
             self.stream = None
+
         if self.pyaudio:
             self.pyaudio.terminate()
             self.pyaudio = None
 
+        self._set_visualizer_level(0.0)
+
+        self.visualizer_running = False
+
+        if self.visualizer_thread:
+            self.visualizer_thread.join(
+                timeout=0.25
+            )
+            self.visualizer_thread = None
 
 class AudioRecorder:
     """Records audio from microphone using PyAudio."""
@@ -369,7 +497,13 @@ def create_stream_single_shot(
         messages.append(create_text_message(text))
         modalities.append("audio")
 
-    extra_body = {}
+    # Single-shot ASR/TTS must never inherit modality/context
+    # from a previous request on the shared audio server.
+    extra_body = {
+        "id_slot": 0,
+        "continue": False,
+        "reset_context": True,
+    }
 
     if mode == "tts":
         if audio_temperature is not None:
@@ -415,8 +549,13 @@ def process_stream(stream, audio_player=None):
     audio_sample_rate = None
 
     for chunk in stream:
-        if chunk.choices[0].finish_reason == "stop":
+        finish_reason = chunk.choices[0].finish_reason
+
+        # stop, length, or any other terminal reason means the
+        # server has finished this streamed request.
+        if finish_reason is not None:
             completed = True
+            print(f"[finish {finish_reason}]")
             break
 
         delta = chunk.choices[0].delta

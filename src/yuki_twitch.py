@@ -31,10 +31,46 @@ HELIX_CHAT_MESSAGES = "https://api.twitch.tv/helix/chat/messages"
 
 EVENTSUB_WS = "wss://eventsub.wss.twitch.tv/ws"
 
-AUDIO_URL = "http://127.0.0.1:8083/v1"
+AUDIO_URL = "http://127.0.0.1:8087/v1"
+VISUALIZER_TRANSCRIPT_URL = "http://127.0.0.1:8085/api/transcript"
 
 SCOPES = "user:read:chat user:write:chat"
 
+
+def post_visualizer_message(source, author, text):
+    """Best-effort local transcript telemetry."""
+    text = str(text or "").strip()
+
+    if not text:
+        return
+
+    payload = json.dumps(
+        {
+            "source": source,
+            "author": author,
+            "text": text,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    request = Request(
+        VISUALIZER_TRANSCRIPT_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=0.10,
+        ):
+            pass
+    except Exception:
+        # Visualizer must never interrupt Twitch or YUKI.
+        pass
 
 class TTSWorker:
     YUKI_PRIORITY = 0
@@ -260,6 +296,13 @@ class ChatBrainWorker:
                 )
 
                 reply = result["reply"]
+
+                if reply:
+                    post_visualizer_message(
+                        "brain",
+                        "YUKI",
+                        reply,
+                    )
 
                 print()
 
@@ -816,6 +859,12 @@ def print_chat_event(
     # echo without speaking it again.
     if tts_worker.consume_priority_echo(text):
         return
+
+    post_visualizer_message(
+        "twitch",
+        chatter,
+        message,
+    )
 
     spoken = f"{chatter} said: {message}"
 

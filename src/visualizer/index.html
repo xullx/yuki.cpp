@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YUKI</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070c17}
+body{background:radial-gradient(ellipse at 50% 45%,#183a63 0%,#0c1934 55%,#070c17 100%)}
+canvas{display:block;width:100%;height:100%;background:transparent;pointer-events:none}
+#status{position:absolute;left:50%;bottom:4%;transform:translateX(-50%);text-align:center;font-family:Consolas,"Courier New",monospace;color:#d7eaff;white-space:nowrap;pointer-events:none}
+#status h1{margin:0 0 12px;font-size:clamp(14px,2.5vmin,24px);font-weight:500;letter-spacing:.28em;text-indent:.28em;text-shadow:0 0 14px #77caff66}
+.services{display:flex;justify-content:center;gap:clamp(12px,3vmin,30px)}
+.service{display:inline-flex;align-items:center;gap:7px;font-size:clamp(10px,1.5vmin,13px);letter-spacing:.06em;color:#9fb6d1}
+.dot{width:7px;height:7px;flex:none;border-radius:50%;background:#718096;box-shadow:0 0 6px #71809644}
+.service[data-status="connected"] .dot,.service[data-status="ready"] .dot{background:#4ee69a;box-shadow:0 0 8px #4ee69a66}
+.service[data-status="connecting"] .dot{background:#efc66b;box-shadow:0 0 8px #efc66b55}
+.service[data-status="disconnected"] .dot,.service[data-status="error"] .dot{background:#ed7886;box-shadow:0 0 8px #ed788655}
+
+#transcript{position:absolute;right:3%;top:50%;transform:translateY(-50%);width:min(450px,34.5vw);font:19.5px/1.5 "Segoe UI",sans-serif;color:#b4cce1;pointer-events:none}
+[hidden]{display:none!important}
+#transcript-log{max-height:min(375px,63vh);overflow:hidden;overflow-anchor:none;padding:18px 21px;border-left:1px solid #98d9ff30;background:linear-gradient(90deg,#08132360,transparent);mask-image:linear-gradient(to bottom,transparent,#000 14px);-webkit-mask-image:linear-gradient(to bottom,transparent,#000 14px)}
+.chat-message{margin:0 0 18px;opacity:1;transition:opacity .6s ease;animation:chat-arrive .35s ease-out}
+.chat-message:last-child{margin-bottom:0}.chat-message:nth-last-child(n+3){opacity:.55}.chat-message.stale{opacity:.25}
+.chat-meta{display:flex;gap:8px;align-items:baseline;margin-bottom:3px;font:15px/1.4 Consolas,monospace;letter-spacing:.06em;color:#829fb9}
+.chat-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#a8cce5;font-weight:500}.chat-source{font-size:13.5px;color:#7690ab}
+.chat-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.chat-message[data-source="brain"] .chat-author{color:#d6f3ff}.chat-message[data-source="brain"] .chat-text{color:#deefff;text-shadow:0 0 10px #8cd8ff18}
+.chat-message[data-source="system"]{font-size:11px;color:#8ca5bb}
+@keyframes chat-arrive{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+/* Reply sits above the existing YUKI heading without moving the visualizer. */
+#reply{position:absolute;left:50%;bottom:12.5%;transform:translateX(-50%);z-index:2;width:min(720px,82vw);max-height:clamp(44px,11vh,120px);overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font-family:"Yu Gothic UI","Yu Gothic","Hiragino Sans","Noto Sans JP",sans-serif;font-size:clamp(14px,1.9vmin,19px);font-weight:300;font-style:oblique 6deg;line-height:1.55;letter-spacing:.025em;color:rgba(222,239,255,.88);text-shadow:0 0 10px rgba(144,217,255,.22);text-align:center;pointer-events:none}
+#reply-text.typing::after{content:"";display:inline-block;width:2px;height:.95em;margin-left:4px;vertical-align:-.08em;background:rgba(205,242,255,.95);box-shadow:0 0 8px rgba(121,211,255,.75);transform:skewX(-6deg);animation:caret-blink .72s steps(1,end) infinite}
+@keyframes caret-blink{0%,46%{opacity:1}47%,100%{opacity:.12}}}
+@media(max-width:850px){#transcript{top:3%;right:6%;transform:none;width:88%;font-size:12px}#transcript-log{max-height:17vh;padding:5px 10px}.chat-message{margin-bottom:8px}.chat-text{-webkit-line-clamp:2}}
+@media(max-height:300px){#reply{bottom:16%;max-height:34px;font-size:11px;line-height:1.35}}
+@media(prefers-reduced-motion:reduce){.chat-message{animation:none;transition:none}#reply-text.typing::after{animation:none}}
+
+:root{--layout-ms:700ms;--butterfly-dx:0vw;--butterfly-dy:0vh;--butterfly-scale:1;--explorer-x:72vw;--explorer-y:48vh;--explorer-w:min(420px,39vw)}
+#yuki{transform:translate(var(--butterfly-dx),var(--butterfly-dy)) scale(var(--butterfly-scale));transform-origin:50% 50%;transition:transform var(--layout-ms) cubic-bezier(.22,1,.36,1)}
+#explorer{box-sizing:border-box;position:absolute;z-index:3;left:clamp(calc(var(--explorer-w)/2 + 12px),var(--explorer-x),calc(100vw - var(--explorer-w)/2 - 12px));top:clamp(110px,var(--explorer-y),calc(100vh - 110px));width:var(--explorer-w);max-height:min(370px,62vh);display:flex;flex-direction:column;transform:translate(-50%,-46%) scale(.94);opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--layout-ms),transform var(--layout-ms) cubic-bezier(.22,1,.36,1),left var(--layout-ms),top var(--layout-ms),visibility var(--layout-ms);border:1px solid #9ad9ff35;border-radius:16px;background:linear-gradient(145deg,#122a43f5,#0b1629f5);box-shadow:0 18px 60px #0005,0 0 32px #7acaff0b;color:#c9e2f5;font:13px/1.45 "Segoe UI",sans-serif;overflow:hidden}
+body.explorer-open #explorer{opacity:1;visibility:visible;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+body.explorer-open #transcript{opacity:.15}
+.explorer-head{display:flex;align-items:center;justify-content:space-between;padding:15px 17px;border-bottom:1px solid #a4d9ff18;gap:12px}
+#explorer-title{margin:0;font-size:14px;font-weight:500;letter-spacing:.04em}
+#explorer-caption{margin:3px 0 0;color:#809eb8;font-size:11px}
+#explorer-close{background:transparent;border:0;color:#bad7eb;font:20px system-ui;cursor:pointer;padding:4px 8px;border-radius:6px}
+#explorer-list{list-style:none;margin:0;padding:8px;overflow:auto;min-height:0}
+.explorer-item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;border-bottom:1px solid #9ed8ff0b}
+.explorer-icon{width:23px;height:23px;display:grid;place-items:center;color:#a0dfff;font:19px system-ui;flex:none}
+.explorer-copy{min-width:0}.explorer-name{display:block;font-weight:500;overflow-wrap:anywhere}.explorer-detail{display:block;font-size:11px;color:#809eb8;overflow-wrap:anywhere}
+.explorer-empty{padding:25px 12px;text-align:center;color:#809eb8}
+#layout-controls{position:absolute;z-index:5;top:14px;left:14px;font:12px/1.4 "Segoe UI",sans-serif;color:#bdd7e9;max-width:calc(100vw - 28px)}
+#layout-controls summary{box-sizing:border-box;width:30px;height:30px;display:grid;place-items:center;cursor:pointer;list-style:none;padding:0;border:1px solid #9ed8ff20;border-radius:50%;background:#0b1729d9;color:#cbeaff;font:15px/1 system-ui;opacity:0;transform:scale(.88);transition:opacity .18s ease,transform .18s ease,border-color .18s ease,background .18s ease;box-shadow:0 0 14px #73c9ff0a}
+#layout-controls summary::-webkit-details-marker{display:none}
+#layout-controls:hover summary,#layout-controls[open] summary,#layout-controls summary:focus-visible{opacity:.82;transform:scale(1)}
+#layout-controls summary:hover{opacity:1;border-color:#9ed8ff45;background:#10223ae8;box-shadow:0 0 16px #73c9ff20}
+#layout-controls summary:focus-visible{outline:1px solid #9ed8ff88;outline-offset:3px}
+#layout-controls[open] summary{opacity:.72}
+.layout-content{margin-top:8px;padding:14px;width:224px;max-width:calc(100vw - 56px);max-height:calc(100vh - 95px);overflow:auto;border:1px solid #9ed8ff28;border-radius:12px;background:#0b1729fa;box-shadow:0 10px 35px #0005}
+.layout-content label{display:block;margin:10px 0}.layout-content label span{display:flex;justify-content:space-between;gap:10px}.layout-content input{width:100%;accent-color:#a4dfff}.layout-buttons{display:flex;gap:6px;flex-wrap:wrap}.layout-buttons button{border:1px solid #9ed8ff30;background:#19334d;color:#cee8f8;border-radius:6px;padding:6px 8px;font:inherit;cursor:pointer}
+.layout-content small{display:block;color:#7e9ab3;margin-top:10px}
+@media(max-width:650px){:root{--explorer-w:min(360px,88vw)}#explorer{max-height:31vh}.explorer-head{padding:9px 13px}.explorer-item{padding:7px 9px}}
+@media(max-height:400px){#explorer{top:clamp(60px,var(--explorer-y),calc(100vh - 60px));max-height:64vh}}
+@media(prefers-reduced-motion:reduce){#yuki,#explorer{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="yuki" role="img" aria-label="YUKI butterfly and circular voice reactor"></canvas>
+<div id="reply" aria-label="Latest YUKI reply" hidden><span id="reply-text" aria-hidden="true"></span></div>
+<section id="status" aria-label="YUKI service status">
+<h1>YUKI</h1>
+<div class="services" role="status" aria-live="polite">
+<span class="service" id="service-brain" data-status="unknown" aria-label="Brain: unknown"><i class="dot" aria-hidden="true"></i>Brain</span>
+<span class="service" id="service-audio" data-status="unknown" aria-label="Audio: unknown"><i class="dot" aria-hidden="true"></i>Audio</span>
+<span class="service" id="service-twitch" data-status="unknown" aria-label="Twitch: unknown"><i class="dot" aria-hidden="true"></i>Twitch</span>
+</div></section>
+<section id="transcript" aria-label="YUKI live transcript" hidden><div id="transcript-log" role="log" aria-live="polite" aria-relevant="additions" aria-atomic="false"></div></section>
+
+<section id="explorer" aria-labelledby="explorer-title" aria-hidden="true" inert>
+ <header class="explorer-head"><div><h2 id="explorer-title">Projects</h2><p id="explorer-caption">Provided by YUKI</p></div><button id="explorer-close" type="button" aria-label="Close explorer">×</button></header>
+ <ul id="explorer-list" aria-label="Explorer entries"></ul>
+</section>
+<details id="layout-controls"><summary aria-label="Layout preview" title="Layout preview"><span aria-hidden="true">⚙</span></summary><div class="layout-content">
+ <div class="layout-buttons"><button id="preview-projects" type="button">Projects</button><button id="preview-files" type="button">Files</button><button id="preview-close" type="button">Close</button></div>
+ <label><span>Transition <output id="layout-durationMs-value"></output></span><input id="layout-durationMs" type="range" min="0" max="2500" step="50"></label>
+ <label><span>Butterfly X <output id="layout-butterflyX-value"></output></span><input id="layout-butterflyX" type="range" min="10" max="90"></label>
+ <label><span>Butterfly Y <output id="layout-butterflyY-value"></output></span><input id="layout-butterflyY" type="range" min="10" max="90"></label>
+ <label><span>Butterfly size <output id="layout-butterflyScale-value"></output></span><input id="layout-butterflyScale" type="range" min="0.25" max="1" step="0.01"></label>
+ <label><span>Explorer X <output id="layout-explorerX-value"></output></span><input id="layout-explorerX" type="range" min="10" max="90"></label>
+ <label><span>Explorer Y <output id="layout-explorerY-value"></output></span><input id="layout-explorerY" type="range" min="10" max="90"></label>
+ <small>Positions apply while the explorer is open. X/Y are percentages of the screen. Preview buttons use sample data.</small>
+</div></details>
+<script>
+(()=>{'use strict';
+// Standalone visualizer frontend. Uses only local YUKI API endpoints; no microphone or external network access.
+// Control from another script in this page:
+//   setVoiceLevel(0.7); setState('speaking'); setEnergy(0.6);
+// Send setVoiceLevel(0) when speech stops. Levels persist until changed.
+// Optional: yukiAnimation.setLoopDuration(7), in seconds.
+const canvas=document.getElementById('yuki');
+// One modest Canvas 2D surface preserves the prototype's translucent membranes
+// and deforming trails without WebGL, frame textures, or a rendering framework.
+const ctx=canvas.getContext('2d',{alpha:true});
+const settings={"flex":8,"size":74,"opening":8,"flutter":1,"duration":7,"tiltX":-3,"tiltY":32,"roll":13,"spread":52,"trail":50,"appearance":"ice","motion":"reveal","guide":true,"particles":false,"crystal":true,"voiceEffect":"flower-arcs","reactorSize":63,"reactorX":0,"reactorY":0};
+let state='idle',voiceInput=0,voiceLevel=0,energyTarget=.5,energy=.5;
+let w=512,h=512,t=0,last=0,phase=0,wingPhase=0,animationId=0;
+let viewScale=1,pixelRatio=1;
+const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+function level(value){if(typeof value!=='number'||!Number.isFinite(value))throw new TypeError('Expected a finite number');return Math.max(0,Math.min(1,value))}
+function setVoiceLevel(value){voiceInput=level(value)}
+function setEnergy(value){energyTarget=level(value)}
+function setState(value){
+ if(!['idle','thinking','speaking'].includes(value))throw new RangeError('State must be idle, thinking, or speaking');
+ state=value;
+}
+function setLoopDuration(seconds){
+ if(typeof seconds!=='number'||!Number.isFinite(seconds)||seconds<.5||seconds>120)throw new RangeError('Duration must be 0.5–120 seconds');
+ settings.duration=seconds;
+}
+// Example: setServiceStatus('brain','ready'); setServiceStatus('twitch','connected');
+// Gray = unknown, green = ready/connected, amber = connecting, red = disconnected/error.
+function setServiceStatus(service,status){
+ if(!['brain','audio','twitch'].includes(service))throw new RangeError('Unknown service');
+ if(!['unknown','ready','connected','connecting','disconnected','error'].includes(status))throw new RangeError('Unknown service status');
+ const el=document.getElementById('service-'+service);el.dataset.status=status;
+ el.setAttribute('aria-label',service+': '+status);
+}
+async function refreshServiceStatus(){
+ try{
+  const response=await fetch('/api/status',{cache:'no-store'});
+  if(!response.ok)throw new Error('Status request failed: '+response.status);
+  const services=await response.json();
+  for(const service of ['brain','audio','twitch']){
+   const value=services[service]||'unknown';
+   const normalized=value==='stopped'?'disconnected':value;
+   setServiceStatus(service,normalized);
+  }
+ }catch(error){
+  for(const service of ['brain','audio','twitch'])setServiceStatus(service,'error');
+ }
+}
+
+// One incoming message updates the transcript and, for brain replies, its subtitle.
+const transcript=document.getElementById('transcript');
+const transcriptLog=document.getElementById('transcript-log');
+const chatEntries=[];
+const reply=document.getElementById('reply'),replyText=document.getElementById('reply-text');
+let replyTimer=0,replyVersion=0;
+function showYukiReply(text){
+ clearTimeout(replyTimer);const version=++replyVersion;
+ // Segment by grapheme so emoji and accented characters are not torn apart.
+ const chars=typeof Intl.Segmenter==='function'?Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text),s=>s.segment):Array.from(text);
+ reply.hidden=false;reply.setAttribute('aria-label','Latest YUKI reply: '+text);
+ replyText.textContent='';replyText.classList.remove('typing');reply.scrollTop=0;
+ if(reduced.matches){replyText.textContent=text;reply.scrollTop=reply.scrollHeight;return}
+ let index=0;replyText.classList.add('typing');
+ function step(){
+  if(version!==replyVersion)return;
+  const char=chars[index++];replyText.textContent+=char;reply.scrollTop=reply.scrollHeight;
+  if(index<chars.length)replyTimer=setTimeout(step,/[.!?]/.test(char)?135:/[,;:]/.test(char)?70:23);
+  else replyText.classList.remove('typing');
+ }
+ step();
+}
+function addYukiChatMessage(message){
+ if(!message||typeof message.text!=='string'||!message.text.trim())return false;
+ const source=['twitch','brain','system'].includes(message.source)?message.source:'system';
+ const author=typeof message.author==='string'&&message.author.trim()?message.author.trim().slice(0,64):(source==='brain'?'YUKI':source==='twitch'?'Viewer':'System');
+ const content=message.text.trim().slice(0,2000);
+ const row=document.createElement('article');row.className='chat-message';row.dataset.source=source;
+ const meta=document.createElement('div');meta.className='chat-meta';
+ const name=document.createElement('span');name.className='chat-author';name.textContent=author;
+ const tag=document.createElement('span');tag.className='chat-source';tag.textContent=source==='brain'?'YUKI':source==='twitch'?'TWITCH':'SYSTEM';
+ const text=document.createElement('p');text.className='chat-text';text.textContent=content;
+ meta.append(name,tag);row.append(meta,text);transcriptLog.append(row);chatEntries.push({row,at:Date.now()});
+ while(chatEntries.length>5)chatEntries.shift().row.remove();
+ transcript.hidden=false;transcriptLog.scrollTo({top:transcriptLog.scrollHeight,behavior:reduced.matches?'auto':'smooth'});
+ if(source==='brain')showYukiReply(content);
+ return true;
+}
+setInterval(()=>{
+ const now=Date.now();for(const item of chatEntries)item.row.classList.toggle('stale',now-item.at>60000);
+ while(chatEntries.length&&now-chatEntries[0].at>90000)chatEntries.shift().row.remove();
+ transcript.hidden=chatEntries.length===0;
+},1000);
+addEventListener('resize',()=>{transcriptLog.scrollTop=transcriptLog.scrollHeight;reply.scrollTop=reply.scrollHeight});
+
+
+// Controller hook: showYukiExplorer({view:'projects',items:[{name:'YUKI',kind:'folder',path:'...'}]});
+// No file access or network requests are performed by the explorer.
+const explorer=document.getElementById('explorer');
+const explorerList=document.getElementById('explorer-list');
+const compactLayout=matchMedia('(max-width:650px)').matches;
+const explorerLayout={durationMs:700,butterflyX:compactLayout?50:28,butterflyY:compactLayout?28:48,butterflyScale:.65,explorerX:compactLayout?50:73,explorerY:compactLayout?64:48};
+let explorerOpen=false,explorerCustomized=false;
+const layoutLimits={durationMs:[0,2500],butterflyX:[10,90],butterflyY:[10,90],butterflyScale:[.25,1],explorerX:[10,90],explorerY:[10,90]};
+let uiRevision=null,uiPostBusy=false,uiPostPending=false;
+function applyExplorerLayout(){
+ const css=document.documentElement.style;
+ css.setProperty('--layout-ms',explorerLayout.durationMs+'ms');
+ css.setProperty('--butterfly-dx',(explorerOpen?explorerLayout.butterflyX-50:0)+'vw');
+ css.setProperty('--butterfly-dy',(explorerOpen?explorerLayout.butterflyY-50:0)+'vh');
+ css.setProperty('--butterfly-scale',explorerOpen?explorerLayout.butterflyScale:1);
+ css.setProperty('--explorer-x',explorerLayout.explorerX+'vw');css.setProperty('--explorer-y',explorerLayout.explorerY+'vh');
+ for(const key of Object.keys(layoutLimits)){
+  document.getElementById('layout-'+key).value=explorerLayout[key];
+  document.getElementById('layout-'+key+'-value').textContent=key==='durationMs'?explorerLayout[key]+' ms':key==='butterflyScale'?Math.round(explorerLayout[key]*100)+'%':explorerLayout[key]+'%';
+ }
+}
+function setExplorerLayout(patch={},sync=true){
+ const next={...explorerLayout};
+ for(const key of Object.keys(layoutLimits))if(Object.prototype.hasOwnProperty.call(patch,key)){
+  const value=patch[key];if(typeof value!=='number'||!Number.isFinite(value))throw new TypeError('Invalid layout value: '+key);
+  next[key]=Math.max(layoutLimits[key][0],Math.min(layoutLimits[key][1],value));
+ }
+ Object.assign(explorerLayout,next);explorerCustomized=true;applyExplorerLayout();
+ if(sync)flushUiState();
+ return {...explorerLayout};
+}
+
+async function flushUiState(){
+ uiPostPending=true;
+ if(uiPostBusy)return;
+ uiPostBusy=true;
+ try{
+  while(uiPostPending){
+   uiPostPending=false;
+   const response=await fetch('/api/ui-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout:{...explorerLayout}}),cache:'no-store'});
+   if(!response.ok)throw new Error('UI state update failed: '+response.status);
+   const data=await response.json();
+   const revision=Number(data.revision);
+   if(Number.isFinite(revision))uiRevision=revision;
+   if(data.layout&&typeof data.layout==='object')setExplorerLayout(data.layout,false);
+  }
+ }catch(error){
+  // Polling will restore the authoritative state if a write fails.
+ }finally{
+  uiPostBusy=false;
+  if(uiPostPending)flushUiState();
+ }
+}
+
+async function refreshUiState(){
+ if(uiPostBusy)return;
+ try{
+  const response=await fetch('/api/ui-state',{cache:'no-store'});
+  if(!response.ok)return;
+  const data=await response.json();
+  const revision=Number(data.revision);
+  if(!Number.isFinite(revision))return;
+  if(uiRevision===null||revision!==uiRevision){
+   uiRevision=revision;
+   if(data.layout&&typeof data.layout==='object')setExplorerLayout(data.layout,false);
+  }
+ }catch(error){
+  // UI synchronization must never interrupt rendering.
+ }
+}
+function showYukiExplorer(payload={}){
+ const data=payload&&typeof payload==='object'?payload:{};
+ const view=data.view==='files'?'files':'projects';
+ document.getElementById('explorer-title').textContent=typeof data.title==='string'?data.title.slice(0,120):view==='files'?'Files':'Projects';
+ document.getElementById('explorer-caption').textContent=data.preview===true?'Sample data · layout preview':typeof data.caption==='string'&&data.caption.trim()?data.caption.trim().slice(0,160):'Provided by YUKI';
+ explorerList.replaceChildren();
+ const items=Array.isArray(data.items)?data.items.slice(0,100):[];
+ for(const item of items){
+  if(!item||typeof item.name!=='string')continue;
+  const li=document.createElement('li');li.className='explorer-item';
+  const icon=document.createElement('span');icon.className='explorer-icon';icon.textContent=item.kind==='file'?'▤':'▱';icon.setAttribute('aria-hidden','true');
+  const copy=document.createElement('div');copy.className='explorer-copy';const name=document.createElement('span');name.className='explorer-name';name.textContent=item.name.slice(0,200);
+  const detail=document.createElement('span');detail.className='explorer-detail';detail.textContent=typeof item.path==='string'?item.path.slice(0,300):item.kind==='file'?'File':'Project folder';
+  copy.append(name,detail);li.append(icon,copy);explorerList.append(li);
+ }
+ if(!explorerList.children.length){const empty=document.createElement('li');empty.className='explorer-empty';empty.textContent='No entries supplied yet';explorerList.append(empty)}
+ explorerOpen=true;explorer.inert=false;explorer.setAttribute('aria-hidden','false');document.body.classList.add('explorer-open');applyExplorerLayout();
+}
+function hideYukiExplorer(){
+ explorerOpen=false;explorer.inert=true;explorer.setAttribute('aria-hidden','true');document.body.classList.remove('explorer-open');applyExplorerLayout();
+ if(explorer.contains(document.activeElement))document.activeElement.blur();
+}
+
+async function commitExplorerState(payload={}){
+ const data=payload&&typeof payload==='object'?payload:{};
+ if(data.action==='hide')hideYukiExplorer();else showYukiExplorer(data);
+ try{
+  const response=await fetch('/api/explorer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),cache:'no-store'});
+  if(!response.ok)throw new Error('Explorer update failed: '+response.status);
+  const result=await response.json();
+  const revision=Number(result.revision);
+  if(Number.isFinite(revision))explorerRevision=revision;
+  return result;
+ }catch(error){
+  return null;
+ }
+}
+function requestYukiExplorer(payload={}){return commitExplorerState({...payload,action:'show'})}
+function requestHideYukiExplorer(){return commitExplorerState({action:'hide'})}
+function setExplorerControlsVisible(visible){document.getElementById('layout-controls').hidden=!visible}
+for(const key of Object.keys(layoutLimits))document.getElementById('layout-'+key).addEventListener('input',e=>setExplorerLayout({[key]:Number(e.target.value)}));
+document.getElementById('explorer-close').onclick=requestHideYukiExplorer;
+document.getElementById('preview-close').onclick=requestHideYukiExplorer;
+document.getElementById('preview-projects').onclick=()=>requestYukiExplorer({view:'projects',title:'Projects',caption:'Sample data · synchronized preview',items:[{name:'YUKI',kind:'folder',path:'Local assistant project'},{name:'Visual studies',kind:'folder',path:'Animation and interface experiments'},{name:'Stream assets',kind:'folder',path:'Overlays and media'}]});
+document.getElementById('preview-files').onclick=()=>requestYukiExplorer({view:'files',title:'Files',caption:'Sample data · synchronized preview',items:[{name:'index.html',kind:'file',path:'Visualizer interface'},{name:'assets',kind:'folder',path:'Images and sounds'},{name:'README.md',kind:'file',path:'Project notes'}]});
+addEventListener('keydown',e=>{if(e.key==='Escape'&&explorerOpen)requestHideYukiExplorer()});
+addEventListener('resize',()=>{if(!explorerCustomized){const narrow=innerWidth<=650;Object.assign(explorerLayout,{butterflyX:narrow?50:28,butterflyY:narrow?28:48,explorerX:narrow?50:73,explorerY:narrow?64:48});applyExplorerLayout()}});
+applyExplorerLayout();
+
+let transcriptLastId=0;
+
+async function refreshTranscript(){
+ try{
+  const response=await fetch(
+   '/api/transcript',
+   {cache:'no-store'}
+  );
+
+  if(!response.ok)return;
+
+  const payload=await response.json();
+  const messages=Array.isArray(payload.messages)?payload.messages:[];
+
+  for(const message of messages){
+   const id=Number(message.id)||0;
+   if(id<=transcriptLastId)continue;
+
+   addYukiChatMessage(message);
+   transcriptLastId=Math.max(transcriptLastId,id);
+  }
+ }catch(error){
+  // Transcript telemetry must never interrupt rendering.
+ }
+}
+
+
+let explorerRevision=null;
+
+async function refreshExplorerState(){
+ try{
+  const response=await fetch(
+   '/api/explorer',
+   {cache:'no-store'}
+  );
+
+  if(!response.ok)return;
+
+  const data=await response.json();
+  const revision=Number(data.revision);
+
+  if(!Number.isFinite(revision)){
+   return;
+  }
+
+  // On first load, remember backend state.
+  // If an explorer is already supposed to be open,
+  // restore it immediately.
+  if(explorerRevision===null){
+   explorerRevision=revision;
+
+   if(data.action==='show'){
+    showYukiExplorer({
+     view:data.view,
+     title:data.title,
+     caption:data.caption,
+     items:Array.isArray(data.items)
+      ?data.items
+      :[]
+    });
+   }
+
+   return;
+  }
+
+  if(revision===explorerRevision){
+   return;
+  }
+
+  explorerRevision=revision;
+
+  if(data.action==='hide'){
+   hideYukiExplorer();
+   return;
+  }
+
+  if(data.action==='show'){
+   showYukiExplorer({
+    view:data.view,
+    title:data.title,
+    caption:data.caption,
+    items:Array.isArray(data.items)
+     ?data.items
+     :[]
+   });
+  }
+
+ }catch(error){
+  // Explorer telemetry must never interrupt rendering.
+ }
+}
+Object.assign(window,{showYukiExplorer:requestYukiExplorer,hideYukiExplorer:requestHideYukiExplorer,setExplorerLayout,setExplorerControlsVisible,refreshExplorerState,refreshUiState,addYukiChatMessage,setVoiceLevel,setState,setEnergy,setServiceStatus,refreshServiceStatus});
+window.yukiAnimation=Object.freeze({showExplorer:requestYukiExplorer,hideExplorer:requestHideYukiExplorer,setExplorerLayout,getExplorerLayout:()=>({...explorerLayout}),setExplorerControlsVisible,addChatMessage:addYukiChatMessage,setVoiceLevel,setState,setEnergy,setLoopDuration,setServiceStatus,refreshServiceStatus,
+ getSettings:()=>({...settings,state,energy:energyTarget,voiceLevel:voiceInput})});
+refreshServiceStatus();
+setInterval(refreshServiceStatus,2000);
+
+refreshTranscript();
+setInterval(refreshTranscript,200);
+
+refreshUiState();
+setInterval(refreshUiState,100);
+
+refreshExplorerState();
+setInterval(refreshExplorerState,150);
+
+let brainProcessing=false;
+
+async function refreshBrainActivity(){
+ try{
+  const response=await fetch(
+   '/api/activity',
+   {cache:'no-store'}
+  );
+
+  if(!response.ok)return;
+
+  const activity=await response.json();
+
+  const busy=activity.brain_processing===true;
+
+  let voice=Number(
+   activity.voice_level ?? 0
+  );
+
+  if(!Number.isFinite(voice)){
+   voice=0;
+  }
+
+  voice=Math.max(
+   0,
+   Math.min(1,voice)
+  );
+
+  // Actual outgoing YUKI speaker amplitude.
+  setVoiceLevel(voice);
+
+  // Thinking speed/color remains independent of speech amplitude.
+  if(busy!==brainProcessing){
+   brainProcessing=busy;
+
+   setLoopDuration(
+    brainProcessing
+     ? 2.2
+     : 7.0
+   );
+  }
+
+  // Voice takes visual priority while YUKI is audibly speaking.
+  if(voice>.03){
+   setState('speaking');
+  }else if(busy){
+   setState('thinking');
+  }else{
+   setState('idle');
+  }
+
+ }catch(error){
+  // Visual telemetry must never interrupt the renderer.
+ }
+}
+
+refreshBrainActivity();
+setInterval(refreshBrainActivity,40);
+function resize(){
+ const width=Math.max(1,innerWidth),height=Math.max(1,innerHeight);
+ viewScale=Math.min(width,height)/512;
+ w=width/viewScale;h=height/viewScale;
+ pixelRatio=Math.min(devicePixelRatio||1,2,2048/Math.max(width,height));
+ canvas.width=Math.max(1,Math.round(width*pixelRatio));canvas.height=Math.max(1,Math.round(height*pixelRatio));
+ ctx.setTransform(viewScale*pixelRatio,0,0,viewScale*pixelRatio,0,0);
+}
+addEventListener('resize',resize);
+document.addEventListener('visibilitychange',()=>{
+ cancelAnimationFrame(animationId);last=0;
+ if(!document.hidden)animationId=requestAnimationFrame(frame);
+});
+function frame(now){
+ const dt=last?Math.min((now-last)/1000,.05):0;last=now;
+ energy+=(energyTarget-energy)*(1-Math.exp(-dt*5));
+ const stateRate=state==='thinking'?1.5:state==='speaking'?1.15:1;
+ const s={...settings,flutter:settings.flutter*(.55+energy*.9)*(state==='speaking'?1.25:1),duration:settings.duration/stateRate};
+ const motion=reduced.matches?.2:1;
+ t+=dt*motion;phase+=dt*Math.PI*2/s.duration*motion;wingPhase+=dt*Math.PI*2*s.flutter*motion;
+ const ink=false,mode='reveal';
+ ctx.clearRect(0,0,w,h);ctx.lineCap='round';ctx.lineJoin='round';
+const pos={x:w/2,y:h/2};
+// Screen-facing voice ring; audio changes its envelope without rotating the butterfly.
+const target=voiceInput;
+voiceLevel+=(target-voiceLevel)*(1-Math.exp(-dt/(target>voiceLevel?.045:.18)));
+// The wing roots and waist project to pos; anchor the reactor to that same point.
+{
+ ctx.save();ctx.translate(pos.x,pos.y);
+ const reactorScale=settings.reactorSize/100;
+ ctx.scale(reactorScale,reactorScale);
+ const r=Math.min(w,h)*.30,lv=Math.min(1,voiceLevel*(.6+energy*.8)+(state==='thinking'?.12+.07*Math.sin(t*2):state==='speaking'?.12:0));
+ ctx.strokeStyle=ink?'#64717f':'#9edbff';ctx.shadowColor='#78bdff';ctx.shadowBlur=ink?0:5+lv*9;
+ ctx.lineWidth=1;ctx.globalAlpha=.13;ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.stroke();
+ // Keep the flower visible at idle; actual voice levels amplify its movement.
+ const petalMotion=.20+.06*Math.sin(t*1.8)+lv*.74;
+ ctx.globalAlpha=.3+lv*.55;ctx.lineWidth=1.2;ctx.beginPath();
+ for(let i=0;i<=180;i++){
+  const a=i/180*Math.PI*2,rr=r+petalMotion*18*(Math.sin(a*6+t*.8)*.65+Math.sin(a*9-t*.8)*.35);
+  const x=Math.cos(a)*rr,y=Math.sin(a)*rr;i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+ }
+ ctx.closePath();ctx.stroke();
+ // Three separate arcs orbit outside the petal waveform.
+ for(let i=0;i<3;i++){
+  const a=t*.7+i*Math.PI*2/3;
+  ctx.globalAlpha=.2+lv*.65;ctx.lineWidth=1.5+lv*2;ctx.beginPath();
+  ctx.arc(0,0,r+15+i*3,a,a+.3+lv*1.6);ctx.stroke();
+ }
+ ctx.restore();
+}
+ctx.save();ctx.translate(pos.x,pos.y);ctx.rotate(s.roll*Math.PI/180);const scale=s.size/100*1.3;ctx.scale(scale,scale);
+const rx=s.tiltX*Math.PI/180,ry=s.tiltY*Math.PI/180;
+// Local hinge first, shared body pose second, camera projection last.
+const flapAmplitude=Math.min(12,85-Math.abs(s.opening));
+const fold=(s.opening+(s.flutter>0?Math.sin(wingPhase)*flapAmplitude:0))*Math.PI/180;
+function pose(x,y,z){
+ // Center hinge at the common wing junction (local y=0).
+ // Both halves share the bend equally; the center itself never moves.
+ const bend=(s.flutter>0?s.flex*Math.sin(wingPhase-Math.PI/2):0)*Math.PI/180;
+ const angle=Math.tanh(y/5)*bend/2;
+ const bentY=y*Math.cos(angle)-z*Math.sin(angle);
+ z=y*Math.sin(angle)+z*Math.cos(angle);y=bentY;
+ const px=x*Math.cos(ry)+z*Math.sin(ry);
+ const pz=-x*Math.sin(ry)+z*Math.cos(ry);
+ const py=y*Math.cos(rx)-pz*Math.sin(rx);
+ const depth=y*Math.sin(rx)+pz*Math.cos(rx);
+ const perspective=600/(600+depth);
+ return [px*perspective,py*perspective,depth];
+}
+function project(x,y){
+ return pose(x*Math.cos(fold),y-8,Math.abs(x)*Math.sin(fold)).slice(0,2);
+}
+function bodyPoint(x,y){return pose(x,y,0).slice(0,2)}
+// Single source of truth for the wing silhouette: the accepted lower wing.
+// Upper wings inherit precisely the same rounded profile, reflected upward.
+const lowerRight=[
+ [[0,8],[37,14],[85,57],[87,89]],
+ [[87,89],[91,120],[58,126],[36,102]],
+ [[36,102],[12,77],[7,34],[0,8]]
+];
+const transformWing=(curves,sx,sy)=>curves.map(c=>c.map(([x,y])=>[x*sx,8+(y-8)*sy]));
+const lowerLeft=transformWing(lowerRight,-1,1);
+const upperRight=transformWing(lowerRight,1.65,-1.45);
+const upperLeft=transformWing(lowerRight,-1.65,-1.45);
+const pathOne=[...upperLeft,...lowerRight];
+const pathTwo=[...upperRight,...lowerLeft];
+const route=[...pathOne,...pathTwo];
+const contour=[];
+function cubic(a,b,c,d,u){const v=1-u;return [0,1].map(k=>v*v*v*a[k]+3*v*v*u*b[k]+3*v*u*u*c[k]+u*u*u*d[k])}
+for(const curve of route)for(let n=0;n<32;n++)contour.push(project(...cubic(...curve,n/32)));
+contour.push(contour[0]);
+const distances=[0];for(let n=1;n<contour.length;n++)distances.push(distances[n-1]+Math.hypot(contour[n][0]-contour[n-1][0],contour[n][1]-contour[n-1][1]));
+const total=distances[distances.length-1];
+function at(f){
+ const d=((f%1+1)%1)*total;let lo=1,hi=distances.length-1;
+ while(lo<hi){const mid=(lo+hi)>>1;if(distances[mid]<d)lo=mid+1;else hi=mid}
+ const n=lo,q=(d-distances[n-1])/(distances[n]-distances[n-1]||1);
+ return contour[n].map((v,k)=>contour[n-1][k]+(v-contour[n-1][k])*q);
+}
+
+// Translucent membranes and fine veins stay inside the accepted outline.
+if(!ink){
+ for(const [wi,wing] of [upperLeft,lowerRight,upperRight,lowerLeft].entries()){
+  ctx.save();
+  const meanX=wing.reduce((sum,c)=>sum+c[1][0]+c[2][0],0)/(wing.length*2);
+  const wingDepth=pose(meanX*Math.cos(fold),0,Math.abs(meanX)*Math.sin(fold))[2];
+  const wingLight=Math.max(.35,Math.min(1,.74-wingDepth/240));
+  ctx.globalAlpha=wingLight;
+  ctx.beginPath();ctx.moveTo(...project(...wing[0][0]));
+  for(const c of wing)ctx.bezierCurveTo(...project(...c[1]),...project(...c[2]),...project(...c[3]));
+  ctx.closePath();
+  const membrane=ctx.createLinearGradient(-100,-120,95,120);
+  membrane.addColorStop(0,'rgba(217,242,255,.42)');membrane.addColorStop(.32,'rgba(111,172,255,.16)');membrane.addColorStop(.56,'rgba(211,240,255,.29)');membrane.addColorStop(1,'rgba(112,157,255,.12)');
+  ctx.fillStyle=membrane;ctx.fill();ctx.strokeStyle='rgba(186,222,255,.5)';ctx.lineWidth=1;ctx.shadowColor='#8dbdff';ctx.shadowBlur=5;ctx.stroke();ctx.clip();ctx.shadowBlur=0;
+  // Nested contour gives the membrane a luminous, folded rim.
+  ctx.save();ctx.scale(.87,.87);ctx.beginPath();ctx.moveTo(...project(...wing[0][0]));for(const c of wing)ctx.bezierCurveTo(...project(...c[1]),...project(...c[2]),...project(...c[3]));ctx.closePath();ctx.strokeStyle='rgba(214,241,255,.31)';ctx.lineWidth=.85;ctx.stroke();ctx.restore();
+  for(let k=0;k<5;k++){
+   const c=wing[Math.floor(k/2)%wing.length],end=project(...cubic(...c,.27+(k%2)*.4));
+   ctx.beginPath();ctx.moveTo(0,0);ctx.quadraticCurveTo(end[0]*.28,end[1]*.72,...end);ctx.strokeStyle='rgba(208,237,255,.24)';ctx.lineWidth=.65;ctx.stroke();
+  }
+  // Deterministic frost specks, clipped to the wing rather than floating outside.
+  for(let k=0;k<60;k++){
+   const x=Math.sin(k*127.1+wi*37)*145,y=Math.cos(k*73.7+wi*19)*135;
+   ctx.globalAlpha=.15+.28*(.5+.5*Math.sin(t*.55+k));ctx.fillStyle='#e8f8ff';ctx.beginPath();ctx.arc(x,y,k%9===0?.9:.4,0,Math.PI*2);ctx.fill();
+  }
+  ctx.globalAlpha=1;ctx.restore();
+ }
+}
+
+ctx.strokeStyle=ink ? '#1a1d22' : (brainProcessing ? '#ff3bd4' : '#c8f0ff');
+
+ctx.shadowColor=ink ? 'transparent' : (brainProcessing ? '#ff3bd4' : '#77caff');
+
+ctx.shadowBlur = brainProcessing ? 18 : 8;
+ctx.lineWidth = brainProcessing ? 1.5 : .8;
+if(true){
+ ctx.beginPath();contour.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));
+ ctx.globalAlpha=mode==='hover'?1:.25;ctx.stroke();ctx.globalAlpha=1;
+}
+if(mode==='reveal'){
+ // Allocate more travel time near the body, with a smooth Gaussian falloff.
+ // The normalized time map preserves the chosen full-loop duration.
+ const travelTimes=[0];
+ for(let i=1;i<contour.length;i++){
+  const x=(contour[i][0]+contour[i-1][0])/2,y=(contour[i][1]+contour[i-1][1])/2;
+  const slowdown=1+2.7*Math.exp(-(x*x+y*y)/(2*21*21));
+  travelTimes.push(travelTimes[i-1]+(distances[i]-distances[i-1])*slowdown);
+ }
+ const cycle=(phase/(Math.PI*2))%1,targetTime=cycle*travelTimes[travelTimes.length-1];
+ let segment=1;while(segment<travelTimes.length-1&&travelTimes[segment]<targetTime)segment++;
+ const fraction=(targetTime-travelTimes[segment-1])/(travelTimes[segment]-travelTimes[segment-1]||1);
+ const head=(distances[segment-1]+fraction*(distances[segment]-distances[segment-1]))/total,tail=s.trail/100;
+ const traceColor=brainProcessing?'#ff4fd8':'#5eebff';
+
+ ctx.strokeStyle=ink?'#1a1d22':traceColor;
+ ctx.shadowColor=ink?'transparent':traceColor;
+ ctx.shadowBlur=ink?0:(brainProcessing?14:8);
+
+ for(let n=1;n<=100&&tail>0;n++){
+   const alpha=n/100;
+   const a=at(head-tail+tail*(n-1)/100);
+   const b=at(head-tail+tail*n/100);
+
+   ctx.beginPath();
+   ctx.moveTo(...a);
+   ctx.lineTo(...b);
+
+   ctx.globalAlpha=Math.pow(alpha,2.15);
+   ctx.lineWidth=.45+alpha*(brainProcessing?1.55:1.05);
+
+   ctx.stroke();
+ }
+
+ ctx.globalAlpha=1;
+ ctx.fillStyle=ink?'#1a1d22':traceColor;
+ ctx.shadowColor=ink?'transparent':traceColor;
+ ctx.shadowBlur=ink?0:(brainProcessing?16:10);
+
+ ctx.beginPath();
+ ctx.arc(
+   ...at(head),
+   brainProcessing?2.0:1.55,
+   0,
+   Math.PI*2
+ );
+ ctx.fill();
+}
+// Body and antennae use exactly the same pose and projection, without fold.
+ctx.shadowBlur=ink?0:10;ctx.shadowColor='#9cdbff';ctx.strokeStyle=ink?'#1a1d22':'#dff5ff';
+function bodyPolygon(points){ctx.beginPath();points.forEach(([x,y],i)=>i?ctx.lineTo(...bodyPoint(x,y)):ctx.moveTo(...bodyPoint(x,y)));ctx.closePath()}
+if(!ink){
+ for(const [cy,wide,tall] of [[-19,4,9],[0,6,17],[22,3,9]]){
+  bodyPolygon([[0,cy-tall],[wide,cy],[0,cy+tall],[-wide,cy]]);
+  ctx.fillStyle='rgba(153,211,255,.7)';ctx.fill();ctx.lineWidth=.8;ctx.stroke();
+  bodyPolygon([[0,cy-tall],[0,cy+tall],[wide,cy]]);ctx.fillStyle='rgba(239,251,255,.6)';ctx.fill();
+ }
+}else{ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(...bodyPoint(0,-19));ctx.quadraticCurveTo(...bodyPoint(-3,1),...bodyPoint(0,26));ctx.stroke()}
+ctx.lineWidth=.8;for(const side of [-1,1]){
+ ctx.beginPath();ctx.moveTo(...bodyPoint(0,-22));ctx.bezierCurveTo(...bodyPoint(side*4,-34),...bodyPoint(side*12,-43),...bodyPoint(side*17,-42));ctx.stroke();
+ const tip=bodyPoint(side*17,-42);ctx.beginPath();ctx.arc(...tip,1.6,0,Math.PI*2);ctx.fillStyle=ink?'#1a1d22':'#dff5ff';ctx.fill();
+}
+ctx.restore();animationId=requestAnimationFrame(frame)}
+
+resize();animationId=requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

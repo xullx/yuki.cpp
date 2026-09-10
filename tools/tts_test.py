@@ -17,7 +17,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 client = OpenAI(
-    base_url="http://127.0.0.1:8083/v1",
+    base_url="http://127.0.0.1:8086/v1",
     api_key="dummy",
 )
 

@@ -1,0 +1,408 @@
+{
+  "root": "main",
+  "menus": {
+    "main": {
+      "title": "What do you want to do?",
+      "items": [
+        {
+          "label": "Voice",
+          "hint": "live microphone assistant",
+          "type": "menu",
+          "target": "voice-menu"
+        },
+        {
+          "label": "Text",
+          "hint": "keyboard chat",
+          "type": "action",
+          "target": "text"
+        },
+        {
+          "label": "Twitch",
+          "hint": "reader + YUKI routing",
+          "type": "menu",
+          "target": "twitch"
+        },
+        {
+          "label": "Visualizer",
+          "hint": "OBS browser source",
+          "type": "menu",
+          "target": "visualizer"
+        },
+        {
+          "label": "Services",
+          "hint": "audio / brain / twitch / visualizer",
+          "type": "menu",
+          "target": "services"
+        },
+        {
+          "label": "Logs",
+          "hint": "diagnostics",
+          "type": "menu",
+          "target": "logs"
+        },
+        {
+          "label": "Settings",
+          "hint": "configuration",
+          "type": "menu",
+          "target": "settings"
+        },
+        {
+          "label": "Tools",
+          "hint": "tests",
+          "type": "menu",
+          "target": "tools"
+        },
+        {
+          "label": "Help",
+          "hint": "",
+          "type": "help",
+          "target": "help"
+        },
+        {
+          "label": "Quit",
+          "hint": "exit controller",
+          "type": "quit",
+          "target": "quit"
+        }
+      ]
+    },
+    "twitch": {
+      "title": "Twitch",
+      "items": [
+        {
+          "label": "Start",
+          "hint": "",
+          "type": "action",
+          "target": "twitch-start"
+        },
+        {
+          "label": "Restart",
+          "hint": "",
+          "type": "action",
+          "target": "twitch-restart"
+        },
+        {
+          "label": "Stop",
+          "hint": "",
+          "type": "action",
+          "target": "twitch-stop"
+        },
+        {
+          "label": "Logs",
+          "hint": "",
+          "type": "action",
+          "target": "log-twitch"
+        }
+      ]
+    },
+    "services": {
+      "title": "Services",
+      "items": [
+        {
+          "label": "Status",
+          "hint": "",
+          "type": "action",
+          "target": "status"
+        },
+        {
+          "label": "Restart Audio",
+          "hint": "8083",
+          "type": "action",
+          "target": "restart-audio"
+        },
+        {
+          "label": "Restart Brain",
+          "hint": "8084",
+          "type": "action",
+          "target": "restart-brain"
+        },
+        {
+          "label": "Restart Twitch",
+          "hint": "",
+          "type": "action",
+          "target": "twitch-restart"
+        },
+        {
+          "label": "Stop Twitch",
+          "hint": "",
+          "type": "action",
+          "target": "twitch-stop"
+        },
+        {
+          "label": "Restart Visualizer",
+          "hint": "8085",
+          "type": "action",
+          "target": "visualizer-restart"
+        },
+        {
+          "label": "Stop Visualizer",
+          "hint": "",
+          "type": "action",
+          "target": "visualizer-stop"
+        },
+        {
+          "label": "Stop All",
+          "hint": "",
+          "type": "action",
+          "target": "stop-all"
+        }
+      ]
+    },
+    "logs": {
+      "title": "Logs",
+      "items": [
+        {
+          "label": "Audio",
+          "hint": "",
+          "type": "action",
+          "target": "log-audio"
+        },
+        {
+          "label": "Brain",
+          "hint": "",
+          "type": "action",
+          "target": "log-brain"
+        },
+        {
+          "label": "Twitch",
+          "hint": "",
+          "type": "action",
+          "target": "log-twitch"
+        },
+        {
+          "label": "Visualizer",
+          "hint": "",
+          "type": "action",
+          "target": "log-visualizer"
+        }
+      ]
+    },
+    "settings": {
+      "title": "Settings",
+      "items": [
+        {
+          "label": "Echo",
+          "hint": "",
+          "type": "menu",
+          "target": "echo"
+        },
+        {
+          "label": "YUKI Config",
+          "hint": "",
+          "type": "action",
+          "target": "config-yuki"
+        },
+        {
+          "label": "Twitch Config",
+          "hint": "",
+          "type": "action",
+          "target": "config-twitch"
+        }
+      ]
+    },
+    "echo": {
+      "title": "Echo Mode",
+      "items": [
+        {
+          "label": "Off",
+          "hint": "",
+          "type": "action",
+          "target": "echo-off"
+        },
+        {
+          "label": "Brief",
+          "hint": "",
+          "type": "action",
+          "target": "echo-brief"
+        },
+        {
+          "label": "Full",
+          "hint": "",
+          "type": "action",
+          "target": "echo-full"
+        }
+      ]
+    },
+    "tools": {
+      "title": "Tools",
+      "items": [
+        {
+          "label": "TTS Test",
+          "hint": "",
+          "type": "action",
+          "target": "tts-test"
+        }
+      ]
+    },
+    "voice-menu": {
+      "title": "Voice",
+      "items": [
+        {
+          "label": "Start Conversation",
+          "hint": "microphone → YUKI → speakers",
+          "type": "action",
+          "target": "voice"
+        },
+        {
+          "label": "Audio Logs",
+          "hint": "diagnostics",
+          "type": "action",
+          "target": "log-audio"
+        }
+      ]
+    },
+    "visualizer": {
+      "title": "Visualizer",
+      "items": [
+        {
+          "label": "Start",
+          "hint": "8085",
+          "type": "action",
+          "target": "visualizer-start"
+        },
+        {
+          "label": "Restart",
+          "hint": "8085",
+          "type": "action",
+          "target": "visualizer-restart"
+        },
+        {
+          "label": "Stop",
+          "hint": "",
+          "type": "action",
+          "target": "visualizer-stop"
+        },
+        {
+          "label": "Status",
+          "hint": "",
+          "type": "action",
+          "target": "status"
+        },
+        {
+          "label": "Open Browser",
+          "hint": "127.0.0.1:8085",
+          "type": "action",
+          "target": "visualizer-open"
+        },
+        {
+          "label": "Logs",
+          "hint": "diagnostics",
+          "type": "action",
+          "target": "log-visualizer"
+        }
+      ]
+    }
+  },
+  "actions": {
+    "voice": {
+      "kind": "mode",
+      "runner": "C:\\Yuki\\launch\\modes\\yuki-mode-voice.ps1",
+      "mode": "VOICE"
+    },
+    "text": {
+      "kind": "mode",
+      "runner": "C:\\Yuki\\launch\\modes\\yuki-mode-text.ps1",
+      "mode": "TEXT"
+    },
+    "log-audio": {
+      "kind": "log",
+      "title": "Audio",
+      "paths": [
+        "C:\\Yuki\\logs\\audio-out.log",
+        "C:\\Yuki\\logs\\audio-err.log"
+      ]
+    },
+    "log-brain": {
+      "kind": "log",
+      "title": "Brain",
+      "paths": [
+        "C:\\Yuki\\logs\\brain-out.log",
+        "C:\\Yuki\\logs\\brain-err.log"
+      ]
+    },
+    "log-twitch": {
+      "kind": "log",
+      "title": "Twitch",
+      "paths": [
+        "C:\\Yuki\\logs\\twitch-out.log",
+        "C:\\Yuki\\logs\\twitch-err.log"
+      ]
+    },
+    "twitch-start": {
+      "kind": "backend",
+      "target": "twitch-start"
+    },
+    "twitch-restart": {
+      "kind": "backend",
+      "target": "twitch-restart"
+    },
+    "twitch-stop": {
+      "kind": "backend",
+      "target": "twitch-stop"
+    },
+    "status": {
+      "kind": "backend",
+      "target": "status"
+    },
+    "restart-audio": {
+      "kind": "backend",
+      "target": "restart-audio"
+    },
+    "restart-brain": {
+      "kind": "backend",
+      "target": "restart-brain"
+    },
+    "stop-all": {
+      "kind": "backend",
+      "target": "stop-all"
+    },
+    "echo-off": {
+      "kind": "backend",
+      "target": "echo-off"
+    },
+    "echo-brief": {
+      "kind": "backend",
+      "target": "echo-brief"
+    },
+    "echo-full": {
+      "kind": "backend",
+      "target": "echo-full"
+    },
+    "config-yuki": {
+      "kind": "backend",
+      "target": "config-yuki"
+    },
+    "config-twitch": {
+      "kind": "backend",
+      "target": "config-twitch"
+    },
+    "tts-test": {
+      "kind": "backend",
+      "target": "tts-test"
+    },
+    "visualizer-start": {
+      "kind": "backend",
+      "target": "visualizer-start"
+    },
+    "visualizer-restart": {
+      "kind": "backend",
+      "target": "visualizer-restart"
+    },
+    "visualizer-stop": {
+      "kind": "backend",
+      "target": "visualizer-stop"
+    },
+    "visualizer-open": {
+      "kind": "backend",
+      "target": "visualizer-open"
+    },
+    "log-visualizer": {
+      "kind": "log",
+      "title": "Visualizer",
+      "paths": [
+        "C:\\Yuki\\logs\\visualizer-out.log",
+        "C:\\Yuki\\logs\\visualizer-err.log"
+      ]
+    }
+  }
+}

@@ -1,4 +1,4 @@
-﻿# Models
+# Models
 models/
 *.gguf
 *.safetensors
@@ -25,3 +25,31 @@ mic_profile.json
 # Local backup snapshots
 *.pre-*
 *.bak
+# ------------------------------------------------------------
+# Local YUKI runtime
+# ------------------------------------------------------------
+/archive/
+/backends/
+/bin/
+/benchmarks/runs/
+/benchmarks/registry/
+/benchmarks/experiments/
+/benchmarks/catalog.json
+/benchmarks/system-profile.json
+/cache/
+/logs/
+/models/
+/state/
+/temp/
+
+__pycache__/
+*.py[cod]
+*.bak
+*.zip
+
+# Local/sensitive runtime configuration
+/config/debug-notes.txt
+/config/tts-test-ja.txt
+/config/twitch-token.json
+/config/twitch.json
+/config/yuki.json

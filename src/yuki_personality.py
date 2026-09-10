@@ -649,10 +649,28 @@ def clean_reply_structure(user_text, reply):
 
     # Normal YUKI replies stay concise.
     # Explicit sentence-count requests override the normal limit.
-    max_sentences = (
-        resolve_requested_sentence_count(user_text)
-        or 2
+    requested_sentences = (
+        resolve_requested_sentence_count(
+            user_text
+        )
     )
+
+    requested_characters = (
+        resolve_requested_character_count(
+            user_text
+        )
+    )
+
+    if requested_sentences is not None:
+        max_sentences = requested_sentences
+
+    elif requested_characters is not None:
+        # Explicit length requests may naturally require more than
+        # YUKI's normal two-sentence conversational limit.
+        max_sentences = None
+
+    else:
+        max_sentences = 2
 
     parts = re.split(
         r"(?<=[\u3002\uff01\uff1f!?])\s*",
@@ -665,7 +683,10 @@ def clean_reply_structure(user_text, reply):
         if part.strip()
     ]
 
-    if len(sentences) > max_sentences:
+    if (
+        max_sentences is not None
+        and len(sentences) > max_sentences
+    ):
         text = "".join(
             sentences[:max_sentences]
         ).strip()
@@ -942,6 +963,46 @@ def resolve_requested_sentence_count(user_text):
     return None
 
 
+def resolve_requested_character_count(user_text):
+    """Return an explicit requested character count, or None."""
+    text = strip_control_commands(user_text)
+
+    text = text.translate(
+        str.maketrans(
+            "０１２３４５６７８９",
+            "0123456789",
+        )
+    )
+
+    patterns = (
+        r"(?i)\b(\d{1,5})\s*(?:characters?|chars?)\b",
+        r"(?i)\b(\d{1,5})\s*caracteres?\b",
+        r"(\d{1,5})\s*文字",
+    )
+
+    match = None
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            text,
+        )
+
+        if match:
+            break
+
+    if not match:
+        return None
+
+    count = int(
+        match.group(1)
+    )
+
+    if 20 <= count <= 10000:
+        return count
+
+    return None
+
 def resolve_response_language(user_text):
     """
     YUKI defaults to Japanese.
@@ -1071,6 +1132,23 @@ def build_system(tone_state, user_text="", base_personality=None):
         else load_profile()
     ).strip()
 
+    # >>> YUKI NON-JAPANESE PROFILE FILTER >>>
+    # The Japanese personality contains an explicit "# Language"
+    # section requiring Japanese-only output. Keep that section for
+    # YUKI's normal Japanese mode, but remove it when /lang explicitly
+    # selects another language. This avoids contradictory system rules.
+    response_language = resolve_response_language(
+        user_text
+    )
+
+    if response_language != "ja":
+        base = re.sub(
+            r"(?ms)^# Language\n.*?(?=^# |\Z)",
+            "",
+            base,
+        ).strip()
+    # <<< YUKI NON-JAPANESE PROFILE FILTER <<<
+
     if tone_state == "lively":
         tone = (
             "\u30e6\u30fc\u30b6\u30fc\u306e\u8a71\u3057\u65b9\u306f"
@@ -1125,11 +1203,6 @@ def build_system(tone_state, user_text="", base_personality=None):
     if tone:
         parts.append(tone)
 
-    # Language policy is intentionally appended last so it has
-    # precedence over softer personality/style instructions.
-    parts.append(
-        build_language_instruction(user_text)
-    )
 
     requested_sentences = (
         resolve_requested_sentence_count(user_text)
@@ -1143,6 +1216,44 @@ def build_system(tone_state, user_text="", base_personality=None):
             "This explicit request overrides YUKI's normal "
             "preference for very short replies."
         )
+
+
+    requested_characters = resolve_requested_character_count(
+        user_text
+    )
+
+    if requested_characters is not None:
+        tolerance = max(
+            20,
+            int(requested_characters * 0.10),
+        )
+
+        minimum_characters = max(
+            1,
+            requested_characters - tolerance,
+        )
+
+        maximum_characters = (
+            requested_characters + tolerance
+        )
+
+        parts.append(
+            "The user explicitly requested approximately "
+            f"{requested_characters} characters. "
+            "Keep the complete final response approximately that length, "
+            f"preferably between {minimum_characters} and "
+            f"{maximum_characters} characters. "
+            "Return only the requested content. "
+            "Do not add a preamble, translation, explanation, "
+            "meta-commentary, or an offer to provide another answer. "
+            "This explicit length request overrides YUKI's normal "
+            "preference for very short replies."
+        )
+    # Language policy MUST be the final instruction.
+    # Explicit /lang overrides personality, style, and length guidance.
+    parts.append(
+        build_language_instruction(user_text)
+    )
 
     return "\n".join(part for part in parts if part)
 

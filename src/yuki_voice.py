@@ -6,9 +6,11 @@ from openai import OpenAI
 import yuki_client as h
 import yuki_prosody as prosody
 import yuki_personality as personality
+import yuki_commands as commands
 
 
-AUDIO_URL = "http://127.0.0.1:8083/v1"
+ASR_URL = "http://127.0.0.1:8083/v1"
+TTS_URL = "http://127.0.0.1:8086/v1"
 BRAIN_URL = "http://127.0.0.1:8084/v1"
 
 # Conversation tuning
@@ -30,20 +32,25 @@ if ECHO_MODE not in {"off", "brief", "full"}:
 
 
 def get_tts_sampler(tone_state):
+    """
+    Soft YUKI audio-token sampling profile.
+
+    Lower temperature and narrower top-k reduce unstable variation
+    while preserving some prosodic range.
+    """
     if tone_state == "relaxed":
-        return 0.76, 56
+        return 0.54, 28
 
     if tone_state == "calm":
-        return 0.70, 48
+        return 0.50, 24
 
     if tone_state == "lively":
-        return 0.86, 70
+        return 0.62, 36
 
     if tone_state == "animated":
-        return 0.95, 80
+        return 0.68, 42
 
-    return 0.80, 64
-
+    return 0.56, 30
 
 def build_spoken_reply(transcript, reply):
     mode = ECHO_MODE.strip().lower()
@@ -58,8 +65,13 @@ def build_spoken_reply(transcript, reply):
 
 
 def main():
-    audio = OpenAI(
-        base_url=AUDIO_URL,
+    asr_audio = OpenAI(
+        base_url=ASR_URL,
+        api_key="dummy",
+    )
+
+    tts_audio = OpenAI(
+        base_url=TTS_URL,
         api_key="dummy",
     )
 
@@ -120,7 +132,7 @@ def main():
             print("\n=== ASR ===")
 
             stream = h.create_stream_single_shot(
-                audio,
+                asr_audio,
                 "asr",
                 wav_data=wav_data,
                 max_tokens=256,
@@ -131,6 +143,50 @@ def main():
 
             if not transcript:
                 print("[No transcript]")
+                continue
+
+            # --------------------------------------------------
+            # Deterministic local commands
+            # --------------------------------------------------
+            #
+            # Commands are resolved before prosody/brain/TTS.
+            # A matched command owns the turn completely.
+            # Ordinary speech falls through unchanged.
+            try:
+                command_result = commands.handle_text(
+                    transcript
+                )
+
+            except Exception as exc:
+                command_result = {
+                    "matched": False,
+                    "command_id": None,
+                    "result": None,
+                }
+
+                print(
+                    f"[command error: {exc}]"
+                )
+
+            if command_result.get(
+                "matched"
+            ):
+                command_id = (
+                    command_result.get(
+                        "command_id"
+                    )
+                    or "unknown"
+                )
+
+                print()
+                print("=== COMMAND ===")
+                print(
+                    f"[command {command_id}]"
+                )
+
+                # The command action already occurred inside
+                # yuki_commands.py. Do not send the command
+                # through the conversational brain or TTS.
                 continue
 
             # --------------------------------------------------
@@ -203,7 +259,7 @@ def main():
                 )
 
                 stream = h.create_stream_single_shot(
-                    audio,
+                    tts_audio,
                     "tts",
                     text=spoken_reply,
                     max_tokens=1024,
